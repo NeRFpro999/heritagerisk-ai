@@ -25,18 +25,18 @@
   <dt>Severity</dt><dd>{{ obs.severity }} / 5</dd>
 </dl>
 
-<!-- ── AI Analysis panel ─────────────────────────────────────────────────── -->
+<!-- ── AI Analysis panel ──────────────────────────────────────────────────── -->
 <div class="card ai-panel">
   <div class="ai-panel-header">
     <h2>AI Analysis
       {% if obs.ai_analysis_status == "complete" %}
         <span class="ai-badge ai-badge-complete">
-          {{ obs.ai_provider | upper }} &mdash; {{ obs.ai_confidence }}% confidence
+          AZURE OPENAI &mdash; {{ obs.ai_confidence }}% confidence
         </span>
-      {% elif obs.ai_analysis_status == "running" %}
-        <span class="ai-badge ai-badge-running">Running…</span>
+      {% elif obs.ai_analysis_status == "mock" %}
+        <span class="ai-badge ai-badge-mock">MOCK &mdash; rule-based</span>
       {% elif obs.ai_analysis_status == "failed" %}
-        <span class="ai-badge ai-badge-failed">Failed</span>
+        <span class="ai-badge ai-badge-failed">FAILED</span>
       {% else %}
         <span class="ai-badge ai-badge-pending">Not run</span>
       {% endif %}
@@ -44,20 +44,45 @@
 
     <form method="post" action="/observations/{{ obs.id }}/analyze">
       <button class="btn-primary btn-sm" type="submit">
-        {% if obs.ai_analysis_status == "complete" %}Re-run AI Analysis{% else %}Run AI Analysis{% endif %}
+        {% if obs.ai_analysis_status in ["complete", "mock", "failed"] %}
+          Re-run Analysis
+        {% else %}
+          Run AI Analysis
+        {% endif %}
       </button>
     </form>
   </div>
 
-  {% if obs.ai_provider == "mock" %}
-  <p class="ai-mock-notice">
-    This result is a <strong>rule-based mock</strong> — not real AI.
-    Set <code>AI_ANALYSIS_ENABLED=true</code> and configure Azure OpenAI
-    credentials in your <code>.env</code> to enable real image analysis.
-  </p>
+  {# ── Mock notice ─────────────────────────────────────────────────────────── #}
+  {% if obs.ai_analysis_status == "mock" %}
+  <div class="ai-notice ai-notice-mock">
+    <strong>Mock result — not real AI.</strong>
+    This analysis was produced by a rule-based keyword scan of the observer
+    notes. It does not replace a professional assessment.<br />
+    To enable real image analysis, set <code>AI_ANALYSIS_ENABLED=true</code>
+    and add Azure OpenAI credentials to your <code>.env</code> file.
+  </div>
   {% endif %}
 
+  {# ── Failed notice ──────────────────────────────────────────────────────── #}
+  {% if obs.ai_analysis_status == "failed" %}
+  <div class="ai-notice ai-notice-failed">
+    <strong>Azure OpenAI analysis failed.</strong>
+    The observation is saved and can be reviewed manually.<br />
+    <em>{{ obs.ai_summary }}</em>
+  </div>
+  {% endif %}
+
+  {# ── Azure disclaimer (real result) ─────────────────────────────────────── #}
   {% if obs.ai_analysis_status == "complete" %}
+  <div class="ai-notice ai-notice-disclaimer">
+    AI output is for human review only. It does not replace professional
+    conservation, engineering, cultural heritage, or emergency assessment.
+  </div>
+  {% endif %}
+
+  {# ── Result fields ───────────────────────────────────────────────────────── #}
+  {% if obs.ai_analysis_status in ["complete", "mock"] %}
   <dl class="meta">
     <dt>Summary</dt>
     <dd>{{ obs.ai_summary }}</dd>
@@ -71,11 +96,12 @@
     <dt>Confidence</dt>
     <dd>{{ obs.ai_confidence }}%</dd>
   </dl>
-  {% elif obs.ai_analysis_status == "failed" %}
-  <p class="ai-error">{{ obs.ai_summary }}</p>
-  {% else %}
-  <p class="empty">Click <strong>Run AI Analysis</strong> to analyse this observation.</p>
+  {% elif obs.ai_analysis_status != "failed" %}
+  <p class="empty">
+    Click <strong>Run AI Analysis</strong> to analyse this observation.
+  </p>
   {% endif %}
+
 </div>
 <!-- ── End AI Analysis panel ─────────────────────────────────────────────── -->
 

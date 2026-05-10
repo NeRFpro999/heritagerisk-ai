@@ -160,26 +160,37 @@ def observation_analyze(obs_id: int, db: Session = Depends(get_db)):
 
     image_path = str(UPLOADS_DIR / obs.image_filename) if obs.image_filename else ""
 
-    obs.ai_analysis_status = "running"
-    db.commit()
+    # analyze_observation_image() never raises — all errors become a result
+    # with confidence=0 and a descriptive summary. We check the provider and
+    # confidence to decide the final ai_analysis_status value.
+    result = analyze_observation_image(image_path=image_path, notes=obs.notes)
 
-    try:
-        result = analyze_observation_image(image_path=image_path, notes=obs.notes)
+    # A result from the azure_openai provider with confidence=0 means the
+    # provider caught an error internally and returned a safe fallback.
+    azure_failed = (
+        result.provider == "azure_openai"
+        and result.confidence == 0
+        and result.damage_tags == ["other"]
+    )
+
+    if azure_failed:
+        obs.ai_analysis_status = "failed"
+    elif result.provider == "mock":
+        obs.ai_analysis_status = "mock"
+    else:
         obs.ai_analysis_status = "complete"
-        obs.ai_summary = result.summary
-        obs.ai_confidence = result.confidence
-        obs.ai_provider = result.provider
-        obs.ai_recommended_action = result.recommended_action
-        obs.ai_raw_response = result.raw_response
+
+    obs.ai_summary = result.summary
+    obs.ai_confidence = result.confidence
+    obs.ai_provider = result.provider
+    obs.ai_recommended_action = result.recommended_action
+    obs.ai_raw_response = result.raw_response
+
+    if not azure_failed:
         # Merge AI-suggested tags into existing manual tags (no duplicates)
         existing = set(obs.tags_list)
         merged = list(existing | set(result.damage_tags))
         obs.damage_tags = ",".join(sorted(merged))
-    except Exception as exc:
-        obs.ai_analysis_status = "failed"
-        obs.ai_summary = f"Analysis failed: {exc}"
-        db.commit()
-        raise HTTPException(status_code=500, detail=str(exc))
 
     db.commit()
     return RedirectResponse(url=f"/observations/{obs_id}", status_code=303)

@@ -10,30 +10,110 @@ FastAPI backend for the HeritageRisk AI MVP.
 ## Setup
 
 ```bash
-# 1. Move into the backend directory
 cd backend
 
-# 2. Create and activate a virtual environment
 python3 -m venv .venv
 source .venv/bin/activate        # macOS / Linux
 # .venv\Scripts\activate         # Windows
 
-# 3. Install dependencies
 pip install -r requirements.txt
 ```
 
-## Run the server (no AI credentials needed)
+## Run the server
 
 ```bash
 python3 run.py
 ```
 
-The app starts at **http://127.0.0.1:8000**
+Opens at **http://127.0.0.1:8000** with hot-reload enabled.
 
-Hot-reload is on by default — saving any `.py` file restarts the server automatically.
+---
 
-The app works fully without any Azure OpenAI credentials. The AI analysis
-feature runs in **mock / rule-based mode** by default.
+## AI analysis — how it works
+
+### Mode 1: Mock (default — no credentials needed)
+
+The app works out of the box without any Azure credentials.
+The "Run AI Analysis" button runs a rule-based keyword scan of the observer
+notes and returns a placeholder result clearly labelled **MOCK**.
+
+To confirm mock mode is active, check your `.env` (or environment):
+
+```
+AI_ANALYSIS_ENABLED=false   # or just leave it unset
+```
+
+### Mode 2: Azure OpenAI Vision (real image analysis)
+
+> **Warning — never commit real API keys.**
+> The `.env` file is listed in `.gitignore`. Only ever put real credentials in
+> `.env` locally. Never paste them into source files, templates, or logs.
+
+**Step 1 — copy the template**
+
+```bash
+cp ../.env.example .env
+```
+
+**Step 2 — fill in your Azure values**
+
+Open `.env` and set:
+
+```
+AI_ANALYSIS_ENABLED=true
+AZURE_OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com/
+AZURE_OPENAI_API_KEY=your-real-api-key
+AZURE_OPENAI_DEPLOYMENT=your-vision-deployment-name
+AZURE_OPENAI_API_VERSION=2024-02-01
+```
+
+**Important:** `AZURE_OPENAI_DEPLOYMENT` must be a **vision-capable** deployment
+(e.g. `gpt-4o`, `gpt-4-turbo` with vision, or `gpt-4-vision-preview`).
+A text-only deployment will fail and the result will be saved with
+`ai_analysis_status = "failed"` — the app will not crash.
+
+**Step 3 — restart the server**
+
+```bash
+python3 run.py
+```
+
+**Step 4 — test it**
+
+1. Add a site and an observation with a photo.
+2. Open the observation detail page.
+3. Click **Run AI Analysis**.
+4. The result panel shows **AZURE OPENAI** badge, a summary, confidence %, and recommended action.
+
+### AI output disclaimer
+
+AI output is for human review only. It does not replace professional
+conservation, engineering, cultural heritage, or emergency assessment.
+
+---
+
+## Demo workflow
+
+1. Open **http://127.0.0.1:8000** → click **+ Add Site**.
+2. Add name / location / description → save.
+3. On the site page → **+ Add Observation** → upload photo, add notes, tick damage types.
+4. On the observation page → **Run AI Analysis** (works in mock mode — no key needed).
+5. Click **Create Risk Case** to generate a risk score and evidence report.
+6. On the case page → update status (Draft → Needs Review → Verified → Routed → Closed).
+
+---
+
+## Running tests
+
+```bash
+cd backend
+pytest tests/ -v
+```
+
+Tests do not call the real Azure OpenAI API. They cover mock mode, missing
+credentials, bad JSON responses, and risk score calculation.
+
+---
 
 ## Key URLs
 
@@ -42,79 +122,23 @@ feature runs in **mock / rule-based mode** by default.
 | `http://127.0.0.1:8000/` | Dashboard |
 | `http://127.0.0.1:8000/sites/new` | Add a heritage site |
 | `http://127.0.0.1:8000/cases` | All risk cases |
-| `http://127.0.0.1:8000/health` | Health check (returns JSON) |
+| `http://127.0.0.1:8000/health` | Health check → `{"status":"ok"}` |
 | `http://127.0.0.1:8000/docs` | Interactive API docs (Swagger UI) |
 
-## Demo workflow
-
-1. Open the dashboard and click **+ Add Site**.
-2. Fill in name / location / description and save.
-3. On the site page, click **+ Add Observation**.
-4. Upload a photo, write damage notes, tick damage types, set severity, and save.
-5. On the observation detail page, click **Run AI Analysis** (works in mock mode — no API key needed).
-6. Click **Create Risk Case** to promote the observation.
-7. The risk score is calculated automatically. Open the case to update its status or view the evidence report.
-
-## AI analysis — scaffold only (no real AI yet)
-
-The AI analysis feature is a scaffold prepared for Azure OpenAI Vision.
-The current analysis is **rule-based / mock** — it scans observer notes for
-damage keywords and returns a placeholder result.
-
-> **Warning: never commit real API keys.**
-> The `.env` file is listed in `.gitignore` and must never be committed.
-> Use `.env.example` as a template.
-
-### Running without AI (default)
-
-No configuration needed. `AI_ANALYSIS_ENABLED` defaults to `false`.
-Click "Run AI Analysis" on any observation — it will return a mock result
-clearly labelled as placeholder data.
-
-### Preparing for Azure OpenAI (future)
-
-```bash
-# Copy the template
-cp ../.env.example .env
-
-# Edit .env — fill in your real Azure OpenAI values:
-#   AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-#   AZURE_OPENAI_API_KEY=your-real-key
-#   AZURE_OPENAI_DEPLOYMENT=your-deployment-name
-#   AI_ANALYSIS_ENABLED=true
-```
-
-When `AI_ANALYSIS_ENABLED=true` and all three Azure fields are set, the app
-will route to the real provider. The provider implementation lives in
-`app/services/providers/azure_openai_provider.py` — see the TODO comments
-there for the exact implementation steps.
-
-### AI architecture at a glance
-
-```
-app/config.py                          ← reads env vars, exposes settings object
-app/services/ai_analysis.py            ← public entry point: analyze_observation_image()
-app/services/providers/
-    azure_openai_provider.py           ← scaffold for real Azure OpenAI call
-```
-
-The route `POST /observations/{id}/analyze` calls `analyze_observation_image()`
-which routes to mock or real provider based on config. The result is saved to
-the `observations` table (ai_summary, ai_confidence, ai_provider, etc.) and
-displayed on the observation and case detail pages.
+---
 
 ## Database note
 
-The new AI fields are added to the `observations` table. SQLAlchemy creates the
-table from scratch on first run. If you have an existing `data/heritagerisk.db`
-from a previous session (before the AI fields were added), delete it so the
-schema is recreated:
+If you have an existing `data/heritagerisk.db` from before the AI fields were
+added, delete it so the schema is recreated:
 
 ```bash
 rm ../data/heritagerisk.db
 ```
 
-Any previously uploaded images in `data/uploads/` are unaffected.
+Uploaded images in `data/uploads/` are unaffected.
+
+---
 
 ## File storage
 
@@ -124,30 +148,31 @@ Any previously uploaded images in `data/uploads/` are unaffected.
 | `../data/heritagerisk.db` | SQLite database (auto-created on first run) |
 | `../reports/` | Generated Markdown evidence reports |
 
-These directories are gitignored. `.gitkeep` files hold their place in the repo.
+---
 
 ## Project structure
 
 ```
 backend/
-├── run.py                         # Entry point: python3 run.py
+├── run.py
 ├── requirements.txt
 ├── README.md
+├── tests/
+│   └── test_ai.py              # pytest tests (no real API calls)
 └── app/
-    ├── main.py                    # FastAPI app, all routes
-    ├── config.py                  # Env-var settings (Azure OpenAI, feature flags)
-    ├── database.py                # SQLAlchemy engine + session
-    ├── models.py                  # ORM: Site, Observation, RiskCase
-    ├── risk.py                    # Rule-based risk scoring
-    ├── reports.py                 # Markdown report generator
+    ├── main.py                 # FastAPI app + all routes
+    ├── config.py               # Env-var settings, .env loading
+    ├── database.py             # SQLAlchemy engine + session
+    ├── models.py               # ORM: Site, Observation, RiskCase
+    ├── risk.py                 # Rule-based risk scoring
+    ├── reports.py              # Markdown report generator
     ├── services/
-    │   ├── ai_analysis.py         # Public AI entry point + mock fallback
+    │   ├── ai_analysis.py      # Public entry point + mock fallback
     │   └── providers/
-    │       └── azure_openai_provider.py   # Azure OpenAI scaffold (not yet implemented)
-    ├── templates/                 # Jinja2 HTML templates
+    │       └── azure_openai_provider.py   # Real Azure OpenAI Vision call
+    ├── templates/              # Jinja2 HTML templates
     └── static/
         └── style.css
-```
 
-../.env.example                    # Copy to .env — never commit real keys
+../.env.example                 # Copy to .env — never commit real keys
 ```

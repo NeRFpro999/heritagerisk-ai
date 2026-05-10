@@ -61,9 +61,9 @@
     <!-- ── AI analysis summary on case page ──────────────────────────────── -->
     <h3 style="margin-top:1rem">AI Analysis
       {% if obs.ai_analysis_status == "complete" %}
-        <span class="ai-badge ai-badge-complete">
-          {{ obs.ai_provider | upper }}
-        </span>
+        <span class="ai-badge ai-badge-complete">AZURE OPENAI</span>
+      {% elif obs.ai_analysis_status == "mock" %}
+        <span class="ai-badge ai-badge-mock">MOCK</span>
       {% elif obs.ai_analysis_status == "failed" %}
         <span class="ai-badge ai-badge-failed">Failed</span>
       {% else %}
@@ -71,15 +71,28 @@
       {% endif %}
     </h3>
 
-    {% if obs.ai_analysis_status == "complete" %}
-      {% if obs.ai_provider == "mock" %}
-      <p class="ai-mock-notice">Mock result — not real AI.</p>
-      {% endif %}
+    {% if obs.ai_analysis_status == "mock" %}
+      <p class="ai-notice ai-notice-mock" style="font-size:.82rem">
+        Mock result — rule-based keyword scan, not real AI.
+      </p>
       <dl class="meta">
         <dt>Summary</dt><dd>{{ obs.ai_summary }}</dd>
         <dt>Recommendation</dt><dd>{{ obs.ai_recommended_action or "—" }}</dd>
         <dt>Confidence</dt><dd>{{ obs.ai_confidence }}%</dd>
       </dl>
+    {% elif obs.ai_analysis_status == "complete" %}
+      <p class="ai-notice ai-notice-disclaimer" style="font-size:.82rem">
+        For human review only — not a professional assessment.
+      </p>
+      <dl class="meta">
+        <dt>Summary</dt><dd>{{ obs.ai_summary }}</dd>
+        <dt>Recommendation</dt><dd>{{ obs.ai_recommended_action or "—" }}</dd>
+        <dt>Confidence</dt><dd>{{ obs.ai_confidence }}%</dd>
+      </dl>
+    {% elif obs.ai_analysis_status == "failed" %}
+      <p class="ai-notice ai-notice-failed" style="font-size:.82rem">
+        Analysis failed. <a href="/observations/{{ obs.id }}">Retry on the observation page.</a>
+      </p>
     {% else %}
       <p class="empty">
         <a href="/observations/{{ obs.id }}">Run AI analysis</a> on the observation page.

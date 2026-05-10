@@ -7,6 +7,17 @@ The app runs fully without any of these values set.
 """
 
 import os
+from pathlib import Path
+
+# Load .env automatically when running locally.
+# python-dotenv is a dev dependency; it's a no-op if the file doesn't exist.
+# In production, set real environment variables directly — never commit .env.
+try:
+    from dotenv import load_dotenv
+    _env_path = Path(__file__).resolve().parents[2] / ".env"
+    load_dotenv(_env_path, override=False)  # override=False: real env vars always win
+except ImportError:
+    pass  # python-dotenv not installed — fine, rely on environment variables
 
 
 class Settings:
