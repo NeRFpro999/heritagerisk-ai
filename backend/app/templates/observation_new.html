@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Add Observation — {{ site.name }}{% endblock %}
+
+{% block content %}
+<h1>Add Observation</h1>
+<p class="subtitle">Site: <a href="/sites/{{ site.id }}">{{ site.name }}</a></p>
+
+<form class="form-card" method="post"
+      action="/sites/{{ site.id }}/observations"
+      enctype="multipart/form-data">
+
+  <label for="image">Photo</label>
+  <input id="image" name="image" type="file" accept=".jpg,.jpeg,.png,.webp" />
+  <small>JPG, PNG or WEBP — max 10 MB. Optional but recommended.</small>
+
+  <label for="notes">Damage notes</label>
+  <textarea id="notes" name="notes" rows="5"
+    placeholder="Describe visible damage: location, extent, any changes since last visit…"></textarea>
+
+  <fieldset>
+    <legend>Visible damage types <small>(tick all that apply)</small></legend>
+    <div class="checkbox-grid">
+      {% for tag in all_tags %}
+      <label class="checkbox-label">
+        <input type="checkbox" name="damage_tags" value="{{ tag }}" />
+        {{ tag | capitalize }}
+      </label>
+      {% endfor %}
+    </div>
+  </fieldset>
+
+  <label for="severity">Severity (1 = minor, 5 = severe)</label>
+  <div class="range-row">
+    <input id="severity" name="severity" type="range" min="1" max="5" value="1"
+           oninput="document.getElementById('sev-val').textContent = this.value" />
+    <span id="sev-val">1</span>
+  </div>
+
+  <div class="form-actions">
+    <button class="btn-primary" type="submit">Save Observation</button>
+    <a class="btn-secondary" href="/sites/{{ site.id }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

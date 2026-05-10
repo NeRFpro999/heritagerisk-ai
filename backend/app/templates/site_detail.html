@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ site.name }} — HeritageRisk AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>{{ site.name }}</h1>
+  <a class="btn-primary" href="/sites/{{ site.id }}/observations/new">+ Add Observation</a>
+</div>
+
+<dl class="meta">
+  <dt>Location</dt><dd>{{ site.location or "—" }}</dd>
+  <dt>Description</dt><dd>{{ site.description or "—" }}</dd>
+  <dt>Created</dt><dd>{{ site.created_at.strftime("%Y-%m-%d") }}</dd>
+</dl>
+
+<h2>Observations <span class="badge">{{ site.observations | length }}</span></h2>
+
+{% if site.observations %}
+<div class="obs-list">
+  {% for obs in site.observations | sort(attribute="created_at", reverse=True) %}
+  <div class="card obs-card">
+    {% if obs.image_filename %}
+    <img class="obs-thumb" src="/uploads/{{ obs.image_filename }}" alt="Observation photo" />
+    {% else %}
+    <div class="obs-thumb no-image">No image</div>
+    {% endif %}
+
+    <div class="obs-meta">
+      <p class="obs-date">{{ obs.created_at.strftime("%Y-%m-%d %H:%M") }}</p>
+      <p>{{ obs.notes or "No notes." }}</p>
+
+      {% if obs.tags_list %}
+      <p class="tags">
+        {% for tag in obs.tags_list %}
+        <span class="tag">{{ tag }}</span>
+        {% endfor %}
+      </p>
+      {% endif %}
+
+      <p>Severity: <strong>{{ obs.severity }}/5</strong></p>
+
+      <div class="obs-actions">
+        <a href="/observations/{{ obs.id }}">View</a>
+        {% if obs.risk_case %}
+          <a href="/cases/{{ obs.risk_case.id }}">View Case #{{ obs.risk_case.id }}</a>
+        {% else %}
+          <form method="post" action="/observations/{{ obs.id }}/create_case" style="display:inline">
+            <button class="btn-primary btn-sm" type="submit">Create Risk Case</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty">No observations yet. <a href="/sites/{{ site.id }}/observations/new">Add one.</a></p>
+{% endif %}
+{% endblock %}

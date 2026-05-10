@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Case #{{ case.id }} — HeritageRisk AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Case #{{ case.id }}</h1>
+  <a class="btn-secondary" href="/sites/{{ site.id }}">{{ site.name }}</a>
+</div>
+
+<div class="card-row">
+
+  <div class="card">
+    <h2>Risk Assessment</h2>
+    <dl class="meta">
+      <dt>Score</dt>
+      <dd><span class="score">{{ case.risk_score }} / 100</span></dd>
+      <dt>Band</dt>
+      <dd><span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span></dd>
+      <dt>Status</dt>
+      <dd><span class="status">{{ case.status }}</span></dd>
+      <dt>Routed to</dt>
+      <dd>{{ case.routed_to or "—" }}</dd>
+      <dt>Created</dt>
+      <dd>{{ case.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</dd>
+      <dt>Updated</dt>
+      <dd>{{ case.updated_at.strftime("%Y-%m-%d %H:%M UTC") }}</dd>
+    </dl>
+
+    <h3>Update Status</h3>
+    <form method="post" action="/cases/{{ case.id }}/status" class="form-inline">
+      <select name="status">
+        {% for s in case.STATUSES %}
+        <option value="{{ s }}" {% if case.status == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+      <input name="routed_to" type="text" value="{{ case.routed_to or '' }}"
+             placeholder="Routed to (optional)" />
+      <button class="btn-primary" type="submit">Update</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Observation</h2>
+    {% if obs.image_filename %}
+    <img class="obs-thumb-lg" src="/uploads/{{ obs.image_filename }}" alt="Observation photo" />
+    {% else %}
+    <div class="obs-thumb-lg no-image">No image</div>
+    {% endif %}
+    <dl class="meta">
+      <dt>Date</dt><dd>{{ obs.created_at.strftime("%Y-%m-%d") }}</dd>
+      <dt>Notes</dt><dd>{{ obs.notes or "—" }}</dd>
+      <dt>Damage tags</dt>
+      <dd>
+        {% if obs.tags_list %}
+          {% for tag in obs.tags_list %}<span class="tag">{{ tag }}</span> {% endfor %}
+        {% else %}—{% endif %}
+      </dd>
+      <dt>Severity</dt><dd>{{ obs.severity }} / 5</dd>
+    </dl>
+
+    <!-- ── AI analysis summary on case page ──────────────────────────────── -->
+    <h3 style="margin-top:1rem">AI Analysis
+      {% if obs.ai_analysis_status == "complete" %}
+        <span class="ai-badge ai-badge-complete">
+          {{ obs.ai_provider | upper }}
+        </span>
+      {% elif obs.ai_analysis_status == "failed" %}
+        <span class="ai-badge ai-badge-failed">Failed</span>
+      {% else %}
+        <span class="ai-badge ai-badge-pending">Not run</span>
+      {% endif %}
+    </h3>
+
+    {% if obs.ai_analysis_status == "complete" %}
+      {% if obs.ai_provider == "mock" %}
+      <p class="ai-mock-notice">Mock result — not real AI.</p>
+      {% endif %}
+      <dl class="meta">
+        <dt>Summary</dt><dd>{{ obs.ai_summary }}</dd>
+        <dt>Recommendation</dt><dd>{{ obs.ai_recommended_action or "—" }}</dd>
+        <dt>Confidence</dt><dd>{{ obs.ai_confidence }}%</dd>
+      </dl>
+    {% else %}
+      <p class="empty">
+        <a href="/observations/{{ obs.id }}">Run AI analysis</a> on the observation page.
+      </p>
+    {% endif %}
+  </div>
+
+</div>
+
+<div class="report-links">
+  <a class="btn-secondary" href="/cases/{{ case.id }}/report">View Evidence Report</a>
+  <a class="btn-secondary" href="/cases/{{ case.id }}/report.md">Download .md</a>
+</div>
+{% endblock %}

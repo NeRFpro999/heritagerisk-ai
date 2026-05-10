@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — HeritageRisk AI{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+
+<section class="dashboard-grid">
+
+  <div class="card">
+    <h2>Heritage Sites <span class="badge">{{ sites | length }}</span></h2>
+    {% if sites %}
+    <table>
+      <thead>
+        <tr><th>Name</th><th>Location</th><th>Observations</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for site in sites %}
+        <tr>
+          <td><a href="/sites/{{ site.id }}">{{ site.name }}</a></td>
+          <td>{{ site.location or "—" }}</td>
+          <td>{{ site.observations | length }}</td>
+          <td><a href="/sites/{{ site.id }}">View</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No sites yet. <a href="/sites/new">Add the first one.</a></p>
+    {% endif %}
+    <a class="btn-primary mt" href="/sites/new">+ Add Site</a>
+  </div>
+
+  <div class="card">
+    <h2>Recent Cases <span class="badge">{{ recent_cases | length }}</span></h2>
+    {% if recent_cases %}
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Site</th><th>Score</th><th>Band</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        {% for case in recent_cases %}
+        <tr>
+          <td><a href="/cases/{{ case.id }}">#{{ case.id }}</a></td>
+          <td>{{ case.observation.site.name }}</td>
+          <td>{{ case.risk_score }}</td>
+          <td><span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span></td>
+          <td><span class="status">{{ case.status }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No cases yet.</p>
+    {% endif %}
+    <a class="btn-secondary mt" href="/cases">View all cases</a>
+  </div>
+
+</section>
+{% endblock %}

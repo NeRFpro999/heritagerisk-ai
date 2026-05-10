@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Observation #{{ obs.id }} — HeritageRisk AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Observation #{{ obs.id }}</h1>
+  <a class="btn-secondary" href="/sites/{{ site.id }}">Back to {{ site.name }}</a>
+</div>
+
+{% if obs.image_filename %}
+<img class="obs-full" src="/uploads/{{ obs.image_filename }}" alt="Observation photo" />
+{% else %}
+<div class="obs-full no-image">No image uploaded</div>
+{% endif %}
+
+<dl class="meta">
+  <dt>Date</dt><dd>{{ obs.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</dd>
+  <dt>Notes</dt><dd>{{ obs.notes or "—" }}</dd>
+  <dt>Damage tags</dt>
+  <dd>
+    {% if obs.tags_list %}
+      {% for tag in obs.tags_list %}<span class="tag">{{ tag }}</span> {% endfor %}
+    {% else %}—{% endif %}
+  </dd>
+  <dt>Severity</dt><dd>{{ obs.severity }} / 5</dd>
+</dl>
+
+<!-- ── AI Analysis panel ─────────────────────────────────────────────────── -->
+<div class="card ai-panel">
+  <div class="ai-panel-header">
+    <h2>AI Analysis
+      {% if obs.ai_analysis_status == "complete" %}
+        <span class="ai-badge ai-badge-complete">
+          {{ obs.ai_provider | upper }} &mdash; {{ obs.ai_confidence }}% confidence
+        </span>
+      {% elif obs.ai_analysis_status == "running" %}
+        <span class="ai-badge ai-badge-running">Running…</span>
+      {% elif obs.ai_analysis_status == "failed" %}
+        <span class="ai-badge ai-badge-failed">Failed</span>
+      {% else %}
+        <span class="ai-badge ai-badge-pending">Not run</span>
+      {% endif %}
+    </h2>
+
+    <form method="post" action="/observations/{{ obs.id }}/analyze">
+      <button class="btn-primary btn-sm" type="submit">
+        {% if obs.ai_analysis_status == "complete" %}Re-run AI Analysis{% else %}Run AI Analysis{% endif %}
+      </button>
+    </form>
+  </div>
+
+  {% if obs.ai_provider == "mock" %}
+  <p class="ai-mock-notice">
+    This result is a <strong>rule-based mock</strong> — not real AI.
+    Set <code>AI_ANALYSIS_ENABLED=true</code> and configure Azure OpenAI
+    credentials in your <code>.env</code> to enable real image analysis.
+  </p>
+  {% endif %}
+
+  {% if obs.ai_analysis_status == "complete" %}
+  <dl class="meta">
+    <dt>Summary</dt>
+    <dd>{{ obs.ai_summary }}</dd>
+
+    <dt>Recommended action</dt>
+    <dd>{{ obs.ai_recommended_action or "—" }}</dd>
+
+    <dt>Provider</dt>
+    <dd>{{ obs.ai_provider }}</dd>
+
+    <dt>Confidence</dt>
+    <dd>{{ obs.ai_confidence }}%</dd>
+  </dl>
+  {% elif obs.ai_analysis_status == "failed" %}
+  <p class="ai-error">{{ obs.ai_summary }}</p>
+  {% else %}
+  <p class="empty">Click <strong>Run AI Analysis</strong> to analyse this observation.</p>
+  {% endif %}
+</div>
+<!-- ── End AI Analysis panel ─────────────────────────────────────────────── -->
+
+{% if obs.risk_case %}
+<p>Risk case: <a href="/cases/{{ obs.risk_case.id }}">#{{ obs.risk_case.id }}</a>
+  — {{ obs.risk_case.status }}</p>
+{% else %}
+<form method="post" action="/observations/{{ obs.id }}/create_case">
+  <button class="btn-primary" type="submit">Create Risk Case</button>
+</form>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Report — Case #{{ case.id }} — HeritageRisk AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Evidence Report &mdash; Case #{{ case.id }}</h1>
+  <a class="btn-secondary" href="/cases/{{ case.id }}">Back to Case</a>
+  <a class="btn-secondary" href="/cases/{{ case.id }}/report.md">Download .md</a>
+</div>
+
+<div class="report-body">
+  <pre class="markdown-raw">{{ md_content }}</pre>
+</div>
+{% endblock %}

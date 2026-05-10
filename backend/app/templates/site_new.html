@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Add Site — HeritageRisk AI{% endblock %}
+
+{% block content %}
+<h1>Add Heritage Site</h1>
+
+<form class="form-card" method="post" action="/sites">
+  <label for="name">Site name <span class="required">*</span></label>
+  <input id="name" name="name" type="text" required placeholder="e.g. Colosseum, Rome" />
+
+  <label for="location">Location</label>
+  <input id="location" name="location" type="text" placeholder="e.g. Rome, Italy" />
+
+  <label for="description">Description</label>
+  <textarea id="description" name="description" rows="4"
+    placeholder="Brief description of the site and its heritage significance"></textarea>
+
+  <div class="form-actions">
+    <button class="btn-primary" type="submit">Save Site</button>
+    <a class="btn-secondary" href="/">Cancel</a>
+  </div>
+</form>
+{% endblock %}

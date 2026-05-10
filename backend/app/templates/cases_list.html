@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Cases — HeritageRisk AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Risk Cases</h1>
+</div>
+
+<form class="filter-row" method="get" action="/cases">
+  <label for="status-filter">Filter by status:</label>
+  <select id="status-filter" name="status" onchange="this.form.submit()">
+    <option value="">All statuses</option>
+    {% for s in statuses %}
+    <option value="{{ s }}" {% if filter_status == s %}selected{% endif %}>{{ s }}</option>
+    {% endfor %}
+  </select>
+</form>
+
+{% if cases %}
+<table>
+  <thead>
+    <tr>
+      <th>Case</th><th>Site</th><th>Score</th><th>Band</th><th>Status</th><th>Created</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for case in cases %}
+    <tr>
+      <td><a href="/cases/{{ case.id }}">#{{ case.id }}</a></td>
+      <td>{{ case.observation.site.name }}</td>
+      <td>{{ case.risk_score }}</td>
+      <td><span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span></td>
+      <td><span class="status">{{ case.status }}</span></td>
+      <td>{{ case.created_at.strftime("%Y-%m-%d") }}</td>
+      <td><a href="/cases/{{ case.id }}">View</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No cases found.</p>
+{% endif %}
+{% endblock %}
