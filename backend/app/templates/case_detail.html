@@ -2,108 +2,169 @@
 {% block title %}Case #{{ case.id }} — HeritageRisk AI{% endblock %}
 
 {% block content %}
+
+{# ── Page header ──────────────────────────────────────────────────────────── #}
 <div class="page-header">
-  <h1>Case #{{ case.id }}</h1>
-  <a class="btn-secondary" href="/sites/{{ site.id }}">{{ site.name }}</a>
+  <div>
+    <p class="breadcrumb">
+      <a href="/cases">Cases</a> /
+      <a href="/sites/{{ site.id }}">{{ site.name }}</a> /
+      Case #{{ case.id }}
+    </p>
+    <h1>
+      Case #{{ case.id }}
+      <span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span>
+      <span class="status-badge status-{{ case.status | lower | replace(' ', '-') }}">{{ case.status }}</span>
+    </h1>
+  </div>
+  <div class="page-header-actions">
+    <a class="btn-secondary" href="/cases/{{ case.id }}/report">View Report</a>
+    <a class="btn-secondary" href="/cases/{{ case.id }}/report.md">Download .md</a>
+  </div>
 </div>
 
-<div class="card-row">
+<div class="case-layout">
 
-  <div class="card">
-    <h2>Risk Assessment</h2>
-    <dl class="meta">
-      <dt>Score</dt>
-      <dd><span class="score">{{ case.risk_score }} / 100</span></dd>
-      <dt>Band</dt>
-      <dd><span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span></dd>
-      <dt>Status</dt>
-      <dd><span class="status">{{ case.status }}</span></dd>
-      <dt>Routed to</dt>
-      <dd>{{ case.routed_to or "—" }}</dd>
-      <dt>Created</dt>
-      <dd>{{ case.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</dd>
-      <dt>Updated</dt>
-      <dd>{{ case.updated_at.strftime("%Y-%m-%d %H:%M UTC") }}</dd>
-    </dl>
+  {# ── Left column: risk + status ───────────────────────────────────────────── #}
+  <div class="case-left">
 
-    <h3>Update Status</h3>
-    <form method="post" action="/cases/{{ case.id }}/status" class="form-inline">
-      <select name="status">
+    <div class="card">
+      <h2>Risk Assessment</h2>
+
+      {# Score meter #}
+      <div class="score-display">
+        <span class="score-number">{{ case.risk_score }}</span>
+        <span class="score-denom">/ 100</span>
+      </div>
+      <div class="score-bar">
+        <div class="score-bar-fill score-bar-{{ case.risk_band | lower }}"
+             style="width: {{ case.risk_score }}%"></div>
+      </div>
+      <p class="score-label">
+        <span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }} Risk</span>
+      </p>
+
+      <dl class="meta mt">
+        <dt>Site</dt>
+        <dd><a href="/sites/{{ site.id }}">{{ site.name }}</a></dd>
+        {% if site.location %}
+        <dt>Location</dt>
+        <dd>{{ site.location }}</dd>
+        {% endif %}
+        <dt>Created</dt>
+        <dd>{{ case.created_at.strftime("%d %b %Y, %H:%M UTC") }}</dd>
+        <dt>Last updated</dt>
+        <dd>{{ case.updated_at.strftime("%d %b %Y, %H:%M UTC") }}</dd>
+        {% if case.routed_to %}
+        <dt>Routed to</dt>
+        <dd>{{ case.routed_to }}</dd>
+        {% endif %}
+      </dl>
+    </div>
+
+    {# ── Status update form ────────────────────────────────────────────────── #}
+    <div class="card">
+      <h2>Update Status</h2>
+      <form method="post" action="/cases/{{ case.id }}/status" class="status-form">
+        <label for="status-sel">Case Status</label>
+        <select id="status-sel" name="status">
+          {% for s in case.STATUSES %}
+          <option value="{{ s }}" {% if case.status == s %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+
+        <label for="routed-to">Route to (optional)</label>
+        <input id="routed-to" name="routed_to" type="text"
+               value="{{ case.routed_to or '' }}"
+               placeholder="e.g. Historic England, Local Council" />
+
+        <button class="btn-primary" type="submit">Save Status</button>
+      </form>
+
+      {# Status workflow hint #}
+      <div class="status-flow">
         {% for s in case.STATUSES %}
-        <option value="{{ s }}" {% if case.status == s %}selected{% endif %}>{{ s }}</option>
+        <span class="flow-step {% if case.status == s %}flow-active{% endif %}">{{ s }}</span>
+        {% if not loop.last %}<span class="flow-arrow">→</span>{% endif %}
         {% endfor %}
-      </select>
-      <input name="routed_to" type="text" value="{{ case.routed_to or '' }}"
-             placeholder="Routed to (optional)" />
-      <button class="btn-primary" type="submit">Update</button>
-    </form>
+      </div>
+    </div>
+
   </div>
 
-  <div class="card">
-    <h2>Observation</h2>
-    {% if obs.image_filename %}
-    <img class="obs-thumb-lg" src="/uploads/{{ obs.image_filename }}" alt="Observation photo" />
-    {% else %}
-    <div class="obs-thumb-lg no-image">No image</div>
-    {% endif %}
-    <dl class="meta">
-      <dt>Date</dt><dd>{{ obs.created_at.strftime("%Y-%m-%d") }}</dd>
-      <dt>Notes</dt><dd>{{ obs.notes or "—" }}</dd>
-      <dt>Damage tags</dt>
-      <dd>
-        {% if obs.tags_list %}
-          {% for tag in obs.tags_list %}<span class="tag">{{ tag }}</span> {% endfor %}
-        {% else %}—{% endif %}
-      </dd>
-      <dt>Severity</dt><dd>{{ obs.severity }} / 5</dd>
-    </dl>
+  {# ── Right column: observation + AI ──────────────────────────────────────── #}
+  <div class="case-right">
 
-    <!-- ── AI analysis summary on case page ──────────────────────────────── -->
-    <h3 style="margin-top:1rem">AI Analysis
-      {% if obs.ai_analysis_status == "complete" %}
-        <span class="ai-badge ai-badge-complete">AZURE OPENAI</span>
-      {% elif obs.ai_analysis_status == "mock" %}
-        <span class="ai-badge ai-badge-mock">MOCK</span>
-      {% elif obs.ai_analysis_status == "failed" %}
-        <span class="ai-badge ai-badge-failed">Failed</span>
+    <div class="card">
+      <h2>Observation</h2>
+
+      {% if obs.image_filename %}
+      <img class="obs-detail-img" src="/uploads/{{ obs.image_filename }}" alt="Observation photo" />
       {% else %}
-        <span class="ai-badge ai-badge-pending">Not run</span>
+      <div class="obs-detail-img obs-placeholder"><span>No image uploaded</span></div>
       {% endif %}
-    </h3>
 
-    {% if obs.ai_analysis_status == "mock" %}
-      <p class="ai-notice ai-notice-mock" style="font-size:.82rem">
-        Mock result — rule-based keyword scan, not real AI.
-      </p>
-      <dl class="meta">
-        <dt>Summary</dt><dd>{{ obs.ai_summary }}</dd>
-        <dt>Recommendation</dt><dd>{{ obs.ai_recommended_action or "—" }}</dd>
-        <dt>Confidence</dt><dd>{{ obs.ai_confidence }}%</dd>
+      <dl class="meta mt">
+        <dt>Date</dt>
+        <dd>{{ obs.created_at.strftime("%d %b %Y") }}</dd>
+        <dt>Notes</dt>
+        <dd>{{ obs.notes or "—" }}</dd>
+        <dt>Damage indicators</dt>
+        <dd>
+          {% if obs.tags_list %}
+            {% for tag in obs.tags_list %}
+            <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+            {% endfor %}
+          {% else %}—{% endif %}
+        </dd>
+        <dt>Severity</dt>
+        <dd>
+          <span class="severity-pill">{{ obs.severity }} / 5</span>
+        </dd>
       </dl>
-    {% elif obs.ai_analysis_status == "complete" %}
-      <p class="ai-notice ai-notice-disclaimer" style="font-size:.82rem">
-        For human review only — not a professional assessment.
-      </p>
-      <dl class="meta">
-        <dt>Summary</dt><dd>{{ obs.ai_summary }}</dd>
-        <dt>Recommendation</dt><dd>{{ obs.ai_recommended_action or "—" }}</dd>
-        <dt>Confidence</dt><dd>{{ obs.ai_confidence }}%</dd>
-      </dl>
-    {% elif obs.ai_analysis_status == "failed" %}
-      <p class="ai-notice ai-notice-failed" style="font-size:.82rem">
-        Analysis failed. <a href="/observations/{{ obs.id }}">Retry on the observation page.</a>
-      </p>
-    {% else %}
-      <p class="empty">
-        <a href="/observations/{{ obs.id }}">Run AI analysis</a> on the observation page.
-      </p>
-    {% endif %}
+      <a class="btn-secondary btn-sm mt" href="/observations/{{ obs.id }}">View full observation</a>
+    </div>
+
+    {# ── AI analysis card ─────────────────────────────────────────────────── #}
+    <div class="card ai-panel">
+      <div class="ai-panel-header">
+        <h2>AI Analysis
+          {% if obs.ai_analysis_status == "complete" %}
+            <span class="ai-badge ai-badge-complete">AZURE OPENAI</span>
+          {% elif obs.ai_analysis_status == "mock" %}
+            <span class="ai-badge ai-badge-mock">MOCK</span>
+          {% elif obs.ai_analysis_status == "failed" %}
+            <span class="ai-badge ai-badge-failed">FAILED</span>
+          {% else %}
+            <span class="ai-badge ai-badge-pending">Not run</span>
+          {% endif %}
+        </h2>
+      </div>
+
+      {% if obs.ai_analysis_status == "mock" %}
+        <div class="ai-notice ai-notice-mock">Mock result — rule-based keyword scan, not real AI.</div>
+        <dl class="meta">
+          <dt>Summary</dt><dd>{{ obs.ai_summary }}</dd>
+          <dt>Recommendation</dt><dd>{{ obs.ai_recommended_action or "—" }}</dd>
+          <dt>Confidence</dt><dd>{{ obs.ai_confidence }}%</dd>
+        </dl>
+      {% elif obs.ai_analysis_status == "complete" %}
+        <div class="ai-notice ai-notice-disclaimer">For human review only — not a professional assessment.</div>
+        <dl class="meta">
+          <dt>Summary</dt><dd>{{ obs.ai_summary }}</dd>
+          <dt>Recommendation</dt><dd>{{ obs.ai_recommended_action or "—" }}</dd>
+          <dt>Confidence</dt><dd>{{ obs.ai_confidence }}%</dd>
+        </dl>
+      {% elif obs.ai_analysis_status == "failed" %}
+        <div class="ai-notice ai-notice-failed">
+          Analysis failed. <a href="/observations/{{ obs.id }}">Retry on the observation page.</a>
+        </div>
+      {% else %}
+        <p class="empty"><a href="/observations/{{ obs.id }}">Run AI analysis</a> on the observation page.</p>
+      {% endif %}
+    </div>
+
   </div>
 
-</div>
-
-<div class="report-links">
-  <a class="btn-secondary" href="/cases/{{ case.id }}/report">View Evidence Report</a>
-  <a class="btn-secondary" href="/cases/{{ case.id }}/report.md">Download .md</a>
 </div>
 {% endblock %}

@@ -2,47 +2,97 @@
 {% block title %}{{ site.name }} — HeritageRisk AI{% endblock %}
 
 {% block content %}
+
+{# ── Page header ──────────────────────────────────────────────────────────── #}
 <div class="page-header">
-  <h1>{{ site.name }}</h1>
-  <a class="btn-primary" href="/sites/{{ site.id }}/observations/new">+ Add Observation</a>
+  <div>
+    <p class="breadcrumb"><a href="/sites">Sites</a> / {{ site.name }}</p>
+    <h1>{{ site.name }}</h1>
+  </div>
+  <div class="page-header-actions">
+    <a class="btn-primary" href="/sites/{{ site.id }}/observations/new">+ Add Observation</a>
+    <a class="btn-secondary" href="/cases">View Cases</a>
+  </div>
 </div>
 
-<dl class="meta">
-  <dt>Location</dt><dd>{{ site.location or "—" }}</dd>
-  <dt>Description</dt><dd>{{ site.description or "—" }}</dd>
-  <dt>Created</dt><dd>{{ site.created_at.strftime("%Y-%m-%d") }}</dd>
-</dl>
+{# ── Site summary ─────────────────────────────────────────────────────────── #}
+<div class="card site-summary">
+  <div class="site-summary-grid">
+    <div>
+      <dt>Location</dt>
+      <dd>{{ site.location or "Not specified" }}</dd>
+    </div>
+    <div>
+      <dt>Added</dt>
+      <dd>{{ site.created_at.strftime("%d %B %Y") }}</dd>
+    </div>
+    <div>
+      <dt>Observations</dt>
+      <dd>{{ site.observations | length }}</dd>
+    </div>
+    <div>
+      <dt>Risk Cases</dt>
+      {% set case_count = site.observations | selectattr("risk_case") | list | length %}
+      <dd>{{ case_count }}</dd>
+    </div>
+  </div>
+  {% if site.description %}
+  <p class="site-description">{{ site.description }}</p>
+  {% endif %}
+</div>
 
-<h2>Observations <span class="badge">{{ site.observations | length }}</span></h2>
+{# ── Observations ─────────────────────────────────────────────────────────── #}
+<div class="section-header">
+  <h2>Observations <span class="badge">{{ site.observations | length }}</span></h2>
+</div>
 
 {% if site.observations %}
 <div class="obs-list">
   {% for obs in site.observations | sort(attribute="created_at", reverse=True) %}
   <div class="card obs-card">
+
+    {# Thumbnail #}
     {% if obs.image_filename %}
-    <img class="obs-thumb" src="/uploads/{{ obs.image_filename }}" alt="Observation photo" />
+    <a href="/observations/{{ obs.id }}">
+      <img class="obs-thumb" src="/uploads/{{ obs.image_filename }}" alt="Observation photo" />
+    </a>
     {% else %}
-    <div class="obs-thumb no-image">No image</div>
+    <div class="obs-thumb obs-placeholder"><span>No image</span></div>
     {% endif %}
 
-    <div class="obs-meta">
-      <p class="obs-date">{{ obs.created_at.strftime("%Y-%m-%d %H:%M") }}</p>
-      <p>{{ obs.notes or "No notes." }}</p>
+    {# Content #}
+    <div class="obs-body">
+      <div class="obs-top">
+        <span class="obs-date">{{ obs.created_at.strftime("%d %b %Y, %H:%M") }}</span>
+        {# AI status badge #}
+        {% if obs.ai_analysis_status == "complete" %}
+          <span class="ai-badge ai-badge-complete">AI: Azure</span>
+        {% elif obs.ai_analysis_status == "mock" %}
+          <span class="ai-badge ai-badge-mock">AI: Mock</span>
+        {% elif obs.ai_analysis_status == "failed" %}
+          <span class="ai-badge ai-badge-failed">AI: Failed</span>
+        {% else %}
+          <span class="ai-badge ai-badge-pending">AI: Not run</span>
+        {% endif %}
+      </div>
 
-      {% if obs.tags_list %}
-      <p class="tags">
+      <p class="obs-notes">{{ obs.notes or "No notes recorded." }}</p>
+
+      <div class="obs-tags">
         {% for tag in obs.tags_list %}
-        <span class="tag">{{ tag }}</span>
+        <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
         {% endfor %}
-      </p>
-      {% endif %}
-
-      <p>Severity: <strong>{{ obs.severity }}/5</strong></p>
+        <span class="severity-pill">Severity {{ obs.severity }}/5</span>
+      </div>
 
       <div class="obs-actions">
-        <a href="/observations/{{ obs.id }}">View</a>
+        <a class="btn-secondary btn-sm" href="/observations/{{ obs.id }}">View Details</a>
         {% if obs.risk_case %}
-          <a href="/cases/{{ obs.risk_case.id }}">View Case #{{ obs.risk_case.id }}</a>
+          <a class="btn-secondary btn-sm" href="/cases/{{ obs.risk_case.id }}">
+            Case #{{ obs.risk_case.id }}
+            <span class="band band-{{ obs.risk_case.risk_band | lower }}">{{ obs.risk_case.risk_band }}</span>
+            <span class="status-badge status-{{ obs.risk_case.status | lower | replace(' ', '-') }}">{{ obs.risk_case.status }}</span>
+          </a>
         {% else %}
           <form method="post" action="/observations/{{ obs.id }}/create_case" style="display:inline">
             <button class="btn-primary btn-sm" type="submit">Create Risk Case</button>
@@ -50,10 +100,16 @@
         {% endif %}
       </div>
     </div>
+
   </div>
   {% endfor %}
 </div>
+
 {% else %}
-<p class="empty">No observations yet. <a href="/sites/{{ site.id }}/observations/new">Add one.</a></p>
+<div class="card">
+  <p class="empty">No observations yet for this site.</p>
+  <a class="btn-primary mt" href="/sites/{{ site.id }}/observations/new">Add the first observation</a>
+</div>
 {% endif %}
+
 {% endblock %}

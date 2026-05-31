@@ -3,19 +3,19 @@ from pathlib import Path
 from datetime import datetime
 
 from fastapi import FastAPI, Request, Depends, Form, UploadFile, File, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.database import engine, get_db, Base
 from app.models import Site, Observation, RiskCase
-from app.risk import calculate_risk, ALL_TAGS
+from app.risk import calculate_risk, ALL_TAGS, TAG_LABELS
 from app.reports import generate_report
 from app.config import settings
 from app.services.ai_analysis import analyze_observation_image
 
-# ── Paths ────────────────────────────────────────────────────────────────────
+# ── Paths ─────────────────────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UPLOADS_DIR = REPO_ROOT / "data" / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -23,8 +23,8 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 
-# ── App setup ─────────────────────────────────────────────────────────────────
-Base.metadata.create_all(bind=engine)  # create tables on startup if they don't exist
+# ── App setup ──────────────────────────────────────────────────────────────────
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="HeritageRisk AI", version="0.1.0")
 
@@ -33,32 +33,69 @@ app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
+# Make TAG_LABELS available in every template without passing it explicitly
+templates.env.globals["TAG_LABELS"] = TAG_LABELS
 
-# ── Health ────────────────────────────────────────────────────────────────────
+
+# ── Health ─────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
-# ── Dashboard / Home ──────────────────────────────────────────────────────────
+# ── Seed (idempotent demo data) ────────────────────────────────────────────────
+
+@app.post("/seed")
+def seed_data(db: Session = Depends(get_db)):
+    from app.seed import seed
+    result = seed(db)
+    return RedirectResponse(url="/?seeded=1", status_code=303)
+
+
+# ── Dashboard / Home ───────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, db: Session = Depends(get_db)):
     sites = db.query(Site).order_by(Site.created_at.desc()).all()
-    recent_cases = (
-        db.query(RiskCase)
-        .order_by(RiskCase.created_at.desc())
-        .limit(10)
-        .all()
-    )
+    all_cases = db.query(RiskCase).order_by(RiskCase.created_at.desc()).all()
+    all_obs = db.query(Observation).order_by(Observation.created_at.desc()).all()
+
+    high_risk_cases = [c for c in all_cases if c.risk_band == "High"]
+    needs_attention = [
+        c for c in all_cases if c.status in ("Draft", "Needs Review")
+    ]
+    recent_cases = all_cases[:8]
+    recent_obs = all_obs[:6]
+
+    seeded = request.query_params.get("seeded") == "1"
+
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "sites": sites, "recent_cases": recent_cases},
+        {
+            "request": request,
+            "sites": sites,
+            "total_sites": len(sites),
+            "total_obs": len(all_obs),
+            "total_cases": len(all_cases),
+            "high_risk_count": len(high_risk_cases),
+            "needs_attention_count": len(needs_attention),
+            "recent_cases": recent_cases,
+            "recent_obs": recent_obs,
+            "seeded": seeded,
+        },
     )
 
 
-# ── Sites ─────────────────────────────────────────────────────────────────────
+# ── Sites ──────────────────────────────────────────────────────────────────────
+
+@app.get("/sites", response_class=HTMLResponse)
+def sites_list(request: Request, db: Session = Depends(get_db)):
+    sites = db.query(Site).order_by(Site.created_at.desc()).all()
+    return templates.TemplateResponse(
+        "sites_list.html", {"request": request, "sites": sites}
+    )
+
 
 @app.get("/sites/new", response_class=HTMLResponse)
 def site_new_form(request: Request):
@@ -90,7 +127,7 @@ def site_detail(site_id: int, request: Request, db: Session = Depends(get_db)):
     )
 
 
-# ── Observations ──────────────────────────────────────────────────────────────
+# ── Observations ───────────────────────────────────────────────────────────────
 
 @app.get("/sites/{site_id}/observations/new", response_class=HTMLResponse)
 def observation_new_form(site_id: int, request: Request, db: Session = Depends(get_db)):
@@ -160,13 +197,8 @@ def observation_analyze(obs_id: int, db: Session = Depends(get_db)):
 
     image_path = str(UPLOADS_DIR / obs.image_filename) if obs.image_filename else ""
 
-    # analyze_observation_image() never raises — all errors become a result
-    # with confidence=0 and a descriptive summary. We check the provider and
-    # confidence to decide the final ai_analysis_status value.
     result = analyze_observation_image(image_path=image_path, notes=obs.notes)
 
-    # A result from the azure_openai provider with confidence=0 means the
-    # provider caught an error internally and returned a safe fallback.
     azure_failed = (
         result.provider == "azure_openai"
         and result.confidence == 0
@@ -187,7 +219,6 @@ def observation_analyze(obs_id: int, db: Session = Depends(get_db)):
     obs.ai_raw_response = result.raw_response
 
     if not azure_failed:
-        # Merge AI-suggested tags into existing manual tags (no duplicates)
         existing = set(obs.tags_list)
         merged = list(existing | set(result.damage_tags))
         obs.damage_tags = ",".join(sorted(merged))
@@ -217,17 +248,30 @@ def observation_create_case(obs_id: int, db: Session = Depends(get_db)):
     return RedirectResponse(url=f"/cases/{case.id}", status_code=303)
 
 
-# ── Cases ─────────────────────────────────────────────────────────────────────
+# ── Cases ──────────────────────────────────────────────────────────────────────
 
 @app.get("/cases", response_class=HTMLResponse)
-def cases_list(request: Request, status: str = "", db: Session = Depends(get_db)):
+def cases_list(
+    request: Request,
+    status: str = "",
+    band: str = "",
+    db: Session = Depends(get_db),
+):
     query = db.query(RiskCase)
     if status:
         query = query.filter(RiskCase.status == status)
+    if band:
+        query = query.filter(RiskCase.risk_band == band)
     cases = query.order_by(RiskCase.created_at.desc()).all()
     return templates.TemplateResponse(
         "cases_list.html",
-        {"request": request, "cases": cases, "statuses": RiskCase.STATUSES, "filter_status": status},
+        {
+            "request": request,
+            "cases": cases,
+            "statuses": RiskCase.STATUSES,
+            "filter_status": status,
+            "filter_band": band,
+        },
     )
 
 
@@ -238,7 +282,12 @@ def case_detail(case_id: int, request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Case not found")
     return templates.TemplateResponse(
         "case_detail.html",
-        {"request": request, "case": case, "obs": case.observation, "site": case.observation.site},
+        {
+            "request": request,
+            "case": case,
+            "obs": case.observation,
+            "site": case.observation.site,
+        },
     )
 
 
@@ -269,7 +318,6 @@ def case_report_html(case_id: int, request: Request, db: Session = Depends(get_d
     obs = case.observation
     site = obs.site
 
-    # Re-generate so it's always current
     generate_report(case, obs, site)
 
     report_file = Path(case.report_path) if case.report_path else None

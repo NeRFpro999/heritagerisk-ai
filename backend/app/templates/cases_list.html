@@ -1,43 +1,93 @@
 {% extends "base.html" %}
-{% block title %}Cases — HeritageRisk AI{% endblock %}
+{% block title %}Risk Cases — HeritageRisk AI{% endblock %}
 
 {% block content %}
 <div class="page-header">
   <h1>Risk Cases</h1>
 </div>
 
-<form class="filter-row" method="get" action="/cases">
-  <label for="status-filter">Filter by status:</label>
-  <select id="status-filter" name="status" onchange="this.form.submit()">
-    <option value="">All statuses</option>
-    {% for s in statuses %}
-    <option value="{{ s }}" {% if filter_status == s %}selected{% endif %}>{{ s }}</option>
-    {% endfor %}
-  </select>
+{# ── Filters ──────────────────────────────────────────────────────────────── #}
+<form class="filter-bar" method="get" action="/cases">
+  <div class="filter-group">
+    <label for="sf">Status</label>
+    <select id="sf" name="status" onchange="this.form.submit()">
+      <option value="">All statuses</option>
+      {% for s in statuses %}
+      <option value="{{ s }}" {% if filter_status == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="bf">Risk Band</label>
+    <select id="bf" name="band" onchange="this.form.submit()">
+      <option value="">All bands</option>
+      <option value="High"   {% if filter_band == "High"   %}selected{% endif %}>High</option>
+      <option value="Medium" {% if filter_band == "Medium" %}selected{% endif %}>Medium</option>
+      <option value="Low"    {% if filter_band == "Low"    %}selected{% endif %}>Low</option>
+    </select>
+  </div>
+  {% if filter_status or filter_band %}
+  <a class="btn-secondary btn-sm" href="/cases">Clear filters</a>
+  {% endif %}
 </form>
 
 {% if cases %}
-<table>
-  <thead>
-    <tr>
-      <th>Case</th><th>Site</th><th>Score</th><th>Band</th><th>Status</th><th>Created</th><th></th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for case in cases %}
-    <tr>
-      <td><a href="/cases/{{ case.id }}">#{{ case.id }}</a></td>
-      <td>{{ case.observation.site.name }}</td>
-      <td>{{ case.risk_score }}</td>
-      <td><span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span></td>
-      <td><span class="status">{{ case.status }}</span></td>
-      <td>{{ case.created_at.strftime("%Y-%m-%d") }}</td>
-      <td><a href="/cases/{{ case.id }}">View</a></td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="cases-table-wrap card">
+  <table class="cases-table">
+    <thead>
+      <tr>
+        <th>Case</th>
+        <th>Site</th>
+        <th>Score</th>
+        <th>Band</th>
+        <th>Status</th>
+        <th>Damage Indicators</th>
+        <th>Reported</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for case in cases %}
+      <tr>
+        <td><a href="/cases/{{ case.id }}">#{{ case.id }}</a></td>
+        <td>
+          <a href="/sites/{{ case.observation.site.id }}">{{ case.observation.site.name }}</a>
+          {% if case.observation.site.location %}
+          <span class="location-sub">{{ case.observation.site.location }}</span>
+          {% endif %}
+        </td>
+        <td>
+          <div class="score-cell">
+            <strong>{{ case.risk_score }}</strong>
+            <div class="mini-bar">
+              <div class="mini-bar-fill mini-bar-{{ case.risk_band | lower }}"
+                   style="width:{{ case.risk_score }}%"></div>
+            </div>
+          </div>
+        </td>
+        <td><span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span></td>
+        <td><span class="status-badge status-{{ case.status | lower | replace(' ', '-') }}">{{ case.status }}</span></td>
+        <td>
+          {% for tag in case.observation.tags_list[:3] %}
+          <span class="tag tag-sm">{{ TAG_LABELS.get(tag, tag) }}</span>
+          {% endfor %}
+          {% if case.observation.tags_list | length > 3 %}
+          <span class="tag tag-sm">+{{ case.observation.tags_list | length - 3 }}</span>
+          {% endif %}
+        </td>
+        <td>{{ case.created_at.strftime("%d %b %Y") }}</td>
+        <td><a class="btn-secondary btn-sm" href="/cases/{{ case.id }}">View</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% else %}
-<p class="empty">No cases found.</p>
+<div class="card">
+  <p class="empty">No cases match the current filters.</p>
+  {% if filter_status or filter_band %}
+  <a class="btn-secondary mt" href="/cases">Clear filters</a>
+  {% endif %}
+</div>
 {% endif %}
 {% endblock %}

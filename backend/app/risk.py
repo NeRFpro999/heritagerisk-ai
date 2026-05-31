@@ -1,20 +1,33 @@
 """
-Rule-based risk scoring — placeholder for future CV model output.
+Rule-based risk scoring — placeholder for a future CV model.
 
+Tags match the taxonomy used by the AI provider (ai_analysis.py / azure_openai_provider.py).
 Score = min(100, sum(tag weights) × severity)
 Band  : < 30 → Low  |  30–60 → Medium  |  > 60 → High
 """
 
 TAG_WEIGHTS: dict[str, int] = {
-    "crack": 8,
-    "water": 7,
-    "erosion": 6,
-    "vegetation": 4,
-    "staining": 3,
-    "graffiti": 2,
+    "crack":             8,
+    "erosion":           7,
+    "corrosion":         7,
+    "water_staining":    6,
+    "vegetation_growth": 4,
+    "graffiti":          3,
+    "other":             2,
 }
 
-ALL_TAGS = list(TAG_WEIGHTS.keys())
+ALL_TAGS: list[str] = list(TAG_WEIGHTS.keys())
+
+# Human-readable display labels for templates
+TAG_LABELS: dict[str, str] = {
+    "crack":             "Crack",
+    "erosion":           "Erosion",
+    "corrosion":         "Corrosion / Rust",
+    "water_staining":    "Water Staining",
+    "vegetation_growth": "Vegetation Growth",
+    "graffiti":          "Graffiti",
+    "other":             "Other",
+}
 
 
 def calculate_risk(tags: list[str], severity: int) -> tuple[int, str]:

@@ -10,13 +10,15 @@
 
   <header>
     <nav class="navbar">
-      <a class="brand" href="/">HeritageRisk AI</a>
-      <ul>
+      <a class="brand" href="/">
+        <span class="brand-icon">&#9670;</span> HeritageRisk AI
+      </a>
+      <ul class="nav-links">
         <li><a href="/">Dashboard</a></li>
         <li><a href="/sites">Sites</a></li>
         <li><a href="/cases">Cases</a></li>
-        <li><a href="/sites/new" class="btn-primary">+ Add Site</a></li>
       </ul>
+      <a class="btn-primary btn-sm nav-cta" href="/sites/new">+ Add Site</a>
     </nav>
   </header>
 
@@ -24,8 +26,14 @@
     {% block content %}{% endblock %}
   </main>
 
-  <footer>
-    <p>HeritageRisk AI MVP &mdash; rule-based placeholder analysis</p>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <span class="footer-brand">&#9670; HeritageRisk AI</span>
+      <span class="footer-note">
+        Early-warning platform for heritage site deterioration &mdash;
+        AI output is for human review only and does not replace professional assessment.
+      </span>
+    </div>
   </footer>
 
 </body>

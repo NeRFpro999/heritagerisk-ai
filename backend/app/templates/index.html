@@ -2,58 +2,175 @@
 {% block title %}Dashboard — HeritageRisk AI{% endblock %}
 
 {% block content %}
-<h1>Dashboard</h1>
 
-<section class="dashboard-grid">
+{# ── Seed banner ──────────────────────────────────────────────────────────── #}
+{% if seeded %}
+<div class="banner banner-success">
+  Demo data loaded successfully. Explore the sites and cases below.
+</div>
+{% endif %}
 
-  <div class="card">
-    <h2>Heritage Sites <span class="badge">{{ sites | length }}</span></h2>
-    {% if sites %}
-    <table>
-      <thead>
-        <tr><th>Name</th><th>Location</th><th>Observations</th><th></th></tr>
-      </thead>
-      <tbody>
-        {% for site in sites %}
-        <tr>
-          <td><a href="/sites/{{ site.id }}">{{ site.name }}</a></td>
-          <td>{{ site.location or "—" }}</td>
-          <td>{{ site.observations | length }}</td>
-          <td><a href="/sites/{{ site.id }}">View</a></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p class="empty">No sites yet. <a href="/sites/new">Add the first one.</a></p>
-    {% endif %}
-    <a class="btn-primary mt" href="/sites/new">+ Add Site</a>
+{# ── Hero ─────────────────────────────────────────────────────────────────── #}
+<section class="hero">
+  <div class="hero-text">
+    <h1>Heritage Risk Dashboard</h1>
+    <p class="hero-sub">
+      Citizen-powered early warning for heritage site deterioration.
+      Upload photos, identify damage, create risk cases, route to the right authority.
+    </p>
+    <div class="hero-actions">
+      <a class="btn-primary" href="/sites/new">+ Add Site</a>
+      <a class="btn-secondary" href="/sites">View All Sites</a>
+      <a class="btn-secondary" href="/cases">View All Cases</a>
+      {% if total_sites == 0 %}
+      <form method="post" action="/seed" style="display:inline">
+        <button class="btn-outline" type="submit">Load Demo Data</button>
+      </form>
+      {% endif %}
+    </div>
   </div>
+</section>
+
+{# ── Stats row ────────────────────────────────────────────────────────────── #}
+<section class="stats-row">
+  <div class="stat-card">
+    <span class="stat-number">{{ total_sites }}</span>
+    <span class="stat-label">Heritage Sites</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-number">{{ total_obs }}</span>
+    <span class="stat-label">Observations</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-number">{{ total_cases }}</span>
+    <span class="stat-label">Risk Cases</span>
+  </div>
+  <div class="stat-card stat-card-alert">
+    <span class="stat-number">{{ high_risk_count }}</span>
+    <span class="stat-label">High Risk</span>
+  </div>
+  <div class="stat-card stat-card-warn">
+    <span class="stat-number">{{ needs_attention_count }}</span>
+    <span class="stat-label">Needs Attention</span>
+  </div>
+</section>
+
+{# ── How it works ─────────────────────────────────────────────────────────── #}
+<section class="how-it-works card">
+  <h2>How HeritageRisk AI Works</h2>
+  <div class="workflow-steps">
+    <div class="workflow-step">
+      <span class="step-number">1</span>
+      <h3>Detect</h3>
+      <p>Citizens upload guided smartphone photos of heritage sites. Notes describe visible damage — cracks, corrosion, graffiti, water staining, vegetation growth.</p>
+    </div>
+    <div class="workflow-step">
+      <span class="step-number">2</span>
+      <h3>Analyse</h3>
+      <p>AI or manual review identifies visible risk indicators. A rule-based risk score is calculated. The system creates a structured risk case with an evidence report.</p>
+    </div>
+    <div class="workflow-step">
+      <span class="step-number">3</span>
+      <h3>Verify</h3>
+      <p>A human reviewer verifies the case, updates the status, and confirms the damage assessment before any action is taken.</p>
+    </div>
+    <div class="workflow-step">
+      <span class="step-number">4</span>
+      <h3>Route</h3>
+      <p>Verified cases are routed to the responsible site owner, local council, heritage authority, or conservation team. Response and action status is tracked.</p>
+    </div>
+  </div>
+</section>
+
+{# ── Recent Cases + Recent Observations ───────────────────────────────────── #}
+<div class="dashboard-grid">
 
   <div class="card">
-    <h2>Recent Cases <span class="badge">{{ recent_cases | length }}</span></h2>
+    <div class="card-header">
+      <h2>Recent Cases</h2>
+      <a class="btn-secondary btn-sm" href="/cases">View all</a>
+    </div>
     {% if recent_cases %}
     <table>
       <thead>
-        <tr><th>ID</th><th>Site</th><th>Score</th><th>Band</th><th>Status</th></tr>
+        <tr><th>Case</th><th>Site</th><th>Score</th><th>Band</th><th>Status</th></tr>
       </thead>
       <tbody>
         {% for case in recent_cases %}
         <tr>
           <td><a href="/cases/{{ case.id }}">#{{ case.id }}</a></td>
-          <td>{{ case.observation.site.name }}</td>
-          <td>{{ case.risk_score }}</td>
+          <td><a href="/sites/{{ case.observation.site.id }}">{{ case.observation.site.name }}</a></td>
+          <td><strong>{{ case.risk_score }}</strong></td>
           <td><span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span></td>
-          <td><span class="status">{{ case.status }}</span></td>
+          <td><span class="status-badge status-{{ case.status | lower | replace(' ', '-') }}">{{ case.status }}</span></td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
     {% else %}
-    <p class="empty">No cases yet.</p>
+    <p class="empty">No cases yet. Add a site and observation to get started.</p>
     {% endif %}
-    <a class="btn-secondary mt" href="/cases">View all cases</a>
   </div>
 
-</section>
+  <div class="card">
+    <div class="card-header">
+      <h2>Recent Observations</h2>
+      <a class="btn-secondary btn-sm" href="/sites">View sites</a>
+    </div>
+    {% if recent_obs %}
+    <div class="obs-feed">
+      {% for obs in recent_obs %}
+      <div class="obs-feed-item">
+        {% if obs.image_filename %}
+        <img class="obs-feed-thumb" src="/uploads/{{ obs.image_filename }}" alt="Observation" />
+        {% else %}
+        <div class="obs-feed-thumb obs-placeholder">
+          <span>No image</span>
+        </div>
+        {% endif %}
+        <div class="obs-feed-body">
+          <a class="obs-feed-site" href="/sites/{{ obs.site.id }}">{{ obs.site.name }}</a>
+          <p class="obs-feed-notes">{{ (obs.notes or "No notes")[:120] }}{% if obs.notes and obs.notes|length > 120 %}…{% endif %}</p>
+          <div class="obs-feed-meta">
+            {% for tag in obs.tags_list[:3] %}
+            <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+            {% endfor %}
+            <span class="obs-feed-date">{{ obs.created_at.strftime("%d %b %Y") }}</span>
+          </div>
+          <a class="obs-feed-link" href="/observations/{{ obs.id }}">View →</a>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">No observations yet. Select a site and add one.</p>
+    {% endif %}
+  </div>
+
+</div>
+
+{# ── Sites quick list ─────────────────────────────────────────────────────── #}
+{% if sites %}
+<div class="card">
+  <div class="card-header">
+    <h2>All Heritage Sites</h2>
+    <a class="btn-primary btn-sm" href="/sites/new">+ Add Site</a>
+  </div>
+  <div class="sites-grid">
+    {% for site in sites %}
+    <a class="site-card" href="/sites/{{ site.id }}">
+      <div class="site-card-header">
+        <span class="site-card-name">{{ site.name }}</span>
+        <span class="badge">{{ site.observations | length }} obs</span>
+      </div>
+      <span class="site-card-location">{{ site.location or "Location not specified" }}</span>
+      {% if site.description %}
+      <p class="site-card-desc">{{ site.description[:100] }}{% if site.description|length > 100 %}…{% endif %}</p>
+      {% endif %}
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {% endblock %}
