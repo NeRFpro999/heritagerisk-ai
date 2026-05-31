@@ -1,13 +1,10 @@
 """
-Demo seed data for HeritageRisk AI.
+Demo seed data — three sites covering High/Medium/Low risk and all workflow stages.
+Idempotent: skips records that already exist. Safe to run multiple times.
 
-Idempotent: checks for existing site names before inserting.
-Safe to run multiple times — will not duplicate records.
-
-Usage:
-    cd backend
-    python3 -m app.seed          # run directly
-    # or visit http://127.0.0.1:8000/seed after starting the server
+  Old Stone Church     — crack + water_staining, sev 5 → score 70 → High,   Needs Review
+  Historic Iron Bridge — corrosion + vegetation_growth, sev 4 → score 44 → Medium, Verified
+  Memorial Statue      — graffiti, sev 2               → score  6 → Low,    Routed
 """
 
 from datetime import datetime, timedelta
@@ -17,132 +14,126 @@ from app.models import Site, Observation, RiskCase
 from app.risk import calculate_risk
 from app.reports import generate_report
 
-# Ensure tables exist (safe to call multiple times — create_all is idempotent)
 Base.metadata.create_all(bind=engine)
 
 SEED_SITES = [
     {
-        "name": "Old Stone Church Wall",
+        "name": "Old Stone Church",
         "location": "Kilkenny, Ireland",
         "description": (
-            "Medieval limestone boundary wall associated with St. Canice's Cathedral. "
-            "Listed structure, Category A protected. Approximate construction 12th century."
+            "Medieval limestone church, approximate construction 12th century. "
+            "Category A protected structure. Listed with the National Inventory of "
+            "Architectural Heritage. Managed by the local diocese."
         ),
     },
     {
-        "name": "Historic Railway Bridge",
+        "name": "Historic Iron Bridge",
         "location": "Brunel Quarter, Bristol, UK",
         "description": (
-            "Victorian wrought-iron railway bridge spanning the River Avon. "
-            "Grade II listed. Last full inspection 2019. "
-            "Adjacent to residential development."
+            "Victorian wrought-iron pedestrian bridge spanning the River Avon. "
+            "Grade II listed. Last full professional inspection 2019. "
+            "High public footfall; adjacent to residential development."
         ),
     },
     {
-        "name": "War Memorial Statue",
+        "name": "Memorial Statue",
         "location": "Victoria Square, Birmingham, UK",
         "description": (
             "Bronze memorial sculpture erected 1925. Honours local casualties of WWI. "
-            "Grade II* listed. Subject of ongoing community monitoring programme."
+            "Grade II* listed. Subject of an ongoing community monitoring programme."
         ),
     },
 ]
 
 SEED_OBSERVATIONS = [
-    # ── Old Stone Church Wall ──────────────────────────────────────────────────
+    # ── Old Stone Church — crack + water_staining, sev 5 → score 70 → High, Needs Review ──
     {
-        "site_name": "Old Stone Church Wall",
+        "site_name": "Old Stone Church",
         "notes": (
-            "Possible vertical crack visible near the left-hand section of the wall, "
-            "approximately 60 cm in length. Crack appears to widen slightly at the base. "
-            "Some loss of mortar between stones in the same area."
+            "Vertical crack visible on the south-east wall face, approximately 80 cm in length "
+            "and widening at the base. Significant water staining extends across the lower "
+            "course of stones in the same bay. Mortar loss observed between several stones. "
+            "Crack appears to have opened since the last community observation six months ago."
         ),
-        "damage_tags": "crack,erosion",
-        "severity": 3,
+        "damage_tags": "crack,water_staining",
+        "severity": 5,
         "ai_analysis_status": "mock",
         "ai_summary": (
-            "Keyword scan detected: crack, erosion. "
-            "Vertical cracking with mortar loss is a common indicator of structural movement "
-            "or water ingress. This is a mock result — connect Azure OpenAI Vision for real image analysis."
+            "Visible indicators detected: crack, water_staining. "
+            "A widening vertical crack combined with active water staining is a recognised "
+            "pattern associated with structural movement or sustained water ingress. "
+            "This is a mock/fallback result — connect Azure OpenAI Vision for real image analysis. "
+            "AI suggests visible risk indicators only. Humans verify. The system tracks."
         ),
         "ai_confidence": 35,
         "ai_provider": "mock",
-        "ai_recommended_action": "Schedule an in-person inspection to verify these findings before any action.",
+        "ai_recommended_action": (
+            "Human reviewer should inspect the evidence and prioritise professional review. "
+            "Do not attempt repair."
+        ),
         "case": {
             "status": "Needs Review",
             "routed_to": None,
         },
     },
+    # ── Historic Iron Bridge — corrosion + vegetation_growth, sev 4 → score 44 → Medium, Verified ──
     {
-        "site_name": "Old Stone Church Wall",
+        "site_name": "Historic Iron Bridge",
         "notes": (
-            "Graffiti visible on the lower section of the east-facing wall face, "
-            "approximately 1.2 m wide and 0.4 m tall. Appears to be spray paint applied recently. "
-            "No structural damage observed in this area."
+            "Active corrosion visible on the north railing and on at least two exposed rivets; "
+            "paint surface has flaked exposing bare metal in several patches. "
+            "Vegetation growth observed at the base of both bridge abutments, with roots "
+            "beginning to penetrate mortar joints. No immediate structural failure signs noted, "
+            "but deterioration is clearly progressing since the 2019 inspection record."
+        ),
+        "damage_tags": "corrosion,vegetation_growth",
+        "severity": 4,
+        "ai_analysis_status": "mock",
+        "ai_summary": (
+            "Visible indicators detected: corrosion, vegetation_growth. "
+            "Active corrosion with paint failure combined with vegetation root ingress "
+            "indicates progressive deterioration. Warrants monitoring and professional review. "
+            "This is a mock/fallback result — connect Azure OpenAI Vision for real image analysis. "
+            "AI suggests visible risk indicators only. Humans verify. The system tracks."
+        ),
+        "ai_confidence": 35,
+        "ai_provider": "mock",
+        "ai_recommended_action": (
+            "Verified visible deterioration. Monitor and route to the responsible heritage "
+            "or maintenance authority if appropriate."
+        ),
+        "case": {
+            "status": "Verified",
+            "routed_to": "Bristol City Council — Heritage Structures Team",
+        },
+    },
+    # ── Memorial Statue — graffiti, sev 2 → score 6 → Low, Routed ──────────────
+    {
+        "site_name": "Memorial Statue",
+        "notes": (
+            "Graffiti tag visible on the rear face of the stone plinth, approximately 30 cm wide "
+            "and 15 cm tall. Appears to be marker pen, applied recently. "
+            "No structural damage or cracking observed in the immediate area. "
+            "The memorial surface is otherwise intact and weathering normally for its age."
         ),
         "damage_tags": "graffiti",
         "severity": 2,
         "ai_analysis_status": "mock",
         "ai_summary": (
-            "Keyword scan detected: graffiti. "
-            "Surface graffiti with no structural implications noted. "
-            "This is a mock result — connect Azure OpenAI Vision for real image analysis."
+            "Visible indicators detected: graffiti. "
+            "Surface graffiti with no structural implications noted in this observation. "
+            "This is a mock/fallback result — connect Azure OpenAI Vision for real image analysis. "
+            "AI suggests visible risk indicators only. Humans verify. The system tracks."
         ),
         "ai_confidence": 35,
         "ai_provider": "mock",
-        "ai_recommended_action": "Schedule an in-person inspection to verify these findings before any action.",
-        "case": {
-            "status": "Verified",
-            "routed_to": "Kilkenny County Council — Heritage Office",
-        },
-    },
-    # ── Historic Railway Bridge ────────────────────────────────────────────────
-    {
-        "site_name": "Historic Railway Bridge",
-        "notes": (
-            "Rust and corrosion clearly visible near the north bridge railing and on two of "
-            "the exposed rivets. Paint surface has flaked in multiple places exposing bare metal. "
-            "Water staining visible on the underside of the eastern span."
+        "ai_recommended_action": (
+            "Routed for non-urgent review. No public cleaning or physical intervention "
+            "should be attempted by contributors."
         ),
-        "damage_tags": "corrosion,water_staining",
-        "severity": 4,
-        "ai_analysis_status": "mock",
-        "ai_summary": (
-            "Keyword scan detected: corrosion, water_staining. "
-            "Active corrosion with paint failure and water staining indicates potential "
-            "long-term structural risk if untreated. This is a mock result — connect Azure OpenAI Vision for real image analysis."
-        ),
-        "ai_confidence": 35,
-        "ai_provider": "mock",
-        "ai_recommended_action": "Schedule an in-person inspection to verify these findings before any action.",
         "case": {
             "status": "Routed",
-            "routed_to": "Network Rail — Heritage Structures Team",
-        },
-    },
-    # ── War Memorial Statue ────────────────────────────────────────────────────
-    {
-        "site_name": "War Memorial Statue",
-        "notes": (
-            "Water staining visible around the stone base plinth, particularly on the north face "
-            "where rainwater pools. Moss and vegetation growth observed in mortar joints at the "
-            "base. Some surface erosion to the bronze lettering on the dedication panel."
-        ),
-        "damage_tags": "water_staining,vegetation_growth,erosion",
-        "severity": 3,
-        "ai_analysis_status": "mock",
-        "ai_summary": (
-            "Keyword scan detected: water_staining, vegetation_growth, erosion. "
-            "Combined water ingress, biological growth, and surface erosion suggest active "
-            "deterioration requiring prompt review. "
-            "This is a mock result — connect Azure OpenAI Vision for real image analysis."
-        ),
-        "ai_confidence": 35,
-        "ai_provider": "mock",
-        "ai_recommended_action": "Schedule an in-person inspection to verify these findings before any action.",
-        "case": {
-            "status": "Draft",
-            "routed_to": None,
+            "routed_to": "Birmingham City Council — Public Monuments Team",
         },
     },
 ]
@@ -163,7 +154,6 @@ def seed(db=None) -> dict:
     cases_created = 0
 
     try:
-        # ── Create sites ───────────────────────────────────────────────────────
         site_map: dict[str, Site] = {}
         for s_data in SEED_SITES:
             existing = db.query(Site).filter(Site.name == s_data["name"]).first()
@@ -181,7 +171,6 @@ def seed(db=None) -> dict:
             site_map[s_data["name"]] = site
             sites_created += 1
 
-        # ── Create observations + cases ────────────────────────────────────────
         for i, o_data in enumerate(SEED_OBSERVATIONS):
             site = site_map.get(o_data["site_name"])
             if not site:
@@ -217,7 +206,6 @@ def seed(db=None) -> dict:
             db.flush()
             obs_created += 1
 
-            # Create risk case
             score, band = calculate_risk(
                 [t.strip() for t in o_data["damage_tags"].split(",") if t.strip()],
                 o_data["severity"],

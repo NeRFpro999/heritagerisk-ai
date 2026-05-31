@@ -1,7 +1,4 @@
-/* ─────────────────────────────────────────────────────────────────────────────
-   HeritageRisk AI — Demo Stylesheet
-   Lightweight, no framework. System font stack. Mobile-aware.
-───────────────────────────────────────────────────────────────────────────── */
+/* HeritageRisk AI — stylesheet. No framework. System fonts. */
 
 /* ── Reset ───────────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -426,6 +423,60 @@ legend { font-weight: 600; font-size: .875rem; padding: 0 .5rem; }
   white-space: pre-wrap; font-family: "SF Mono", "Fira Code", Menlo, monospace;
   font-size: .84rem; line-height: 1.75; color: #334155;
 }
+
+/* ── Safety note ──────────────────────────────────────────────────────────── */
+.safety-note {
+  background: #fffbeb;
+  border: 1px solid #f59e0b;
+  border-left: 4px solid #d97706;
+  border-radius: var(--radius);
+  padding: .75rem 1.1rem;
+  font-size: .85rem;
+  line-height: 1.6;
+  color: #78350f;
+  margin-bottom: 1.25rem;
+}
+.safety-note strong { font-weight: 700; }
+.safety-note-principle {
+  display: block;
+  margin-top: .35rem;
+  font-style: italic;
+  font-size: .8rem;
+  color: #92400e;
+}
+
+/* ── AI raw response (collapsible) ───────────────────────────────────────── */
+.raw-response {
+  margin-top: .85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.raw-response summary {
+  padding: .5rem .85rem;
+  font-size: .8rem;
+  font-weight: 600;
+  color: var(--slate);
+  cursor: pointer;
+  background: #f8fafc;
+  user-select: none;
+}
+.raw-response summary:hover { background: #f1f5f9; }
+.raw-response-body {
+  padding: .75rem 1rem;
+  font-family: "SF Mono", "Fira Code", Menlo, monospace;
+  font-size: .8rem;
+  line-height: 1.65;
+  color: #334155;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #f8fafc;
+  margin: 0;
+  border-top: 1px solid var(--border);
+}
+
+/* ── AI fields meta list override ────────────────────────────────────────── */
+dl.ai-fields { margin-top: .85rem; }
 
 /* ── Empty state ──────────────────────────────────────────────────────────── */
 .empty { color: #94a3b8; font-size: .9rem; padding: .75rem 0; }

@@ -1,13 +1,9 @@
 """
-AI image analysis service — single public entry point for the app.
+AI image analysis — single entry point for the app.
 
-Routing:
-  AI_ANALYSIS_ENABLED=false (default) → mock result, no API call
-  AI_ANALYSIS_ENABLED=true + credentials missing → mock result with warning
-  AI_ANALYSIS_ENABLED=true + credentials present → Azure OpenAI Vision
-
-To add a new provider in the future, add a branch at the bottom of
-analyze_observation_image(). Nothing else in the app needs to change.
+  AI_ANALYSIS_ENABLED=false (default)  → mock result, no API call
+  AI_ANALYSIS_ENABLED=true, no creds  → mock result with warning prefix
+  AI_ANALYSIS_ENABLED=true, creds set → Azure OpenAI Vision
 """
 
 from __future__ import annotations
@@ -17,7 +13,7 @@ from pathlib import Path
 
 from app.config import settings
 
-# Allowed damage tags — must match the taxonomy in azure_openai_provider.py
+# Must match the taxonomy in azure_openai_provider.py
 ALLOWED_TAGS: list[str] = [
     "crack",
     "graffiti",
@@ -31,8 +27,6 @@ ALLOWED_TAGS: list[str] = [
 
 @dataclass
 class AIAnalysisResult:
-    """Structured result returned by any analysis provider."""
-
     damage_tags: list[str]
     severity: int           # 1–5
     confidence: int         # 0–100
@@ -42,43 +36,38 @@ class AIAnalysisResult:
     raw_response: str | None = field(default=None)
 
 
-# ── Mock / rule-based fallback ─────────────────────────────────────────────────
-
 def _mock_analyze(image_path: str, notes: str | None) -> AIAnalysisResult:
     """
-    Returns a deterministic placeholder result by scanning the observer's notes
-    for damage keywords. No image file or API key is required.
-
-    Uses the same tag taxonomy as the Azure OpenAI provider so mock and real
-    results are stored and displayed consistently.
+    Keyword-scan the observer notes for damage indicators.
+    No image or API key needed — used when Azure is disabled or unconfigured.
     """
     detected_tags: list[str] = []
     notes_lower = (notes or "").lower()
 
     keyword_map: dict[str, str] = {
-        "crack": "crack",
+        "crack":    "crack",
         "fracture": "crack",
-        "split": "crack",
+        "split":    "crack",
         "graffiti": "graffiti",
-        "vandal": "graffiti",
-        "tag": "graffiti",
-        "water": "water_staining",
-        "damp": "water_staining",
-        "flood": "water_staining",
-        "stain": "water_staining",
-        "leak": "water_staining",
+        "vandal":   "graffiti",
+        "tag":      "graffiti",
+        "water":    "water_staining",
+        "damp":     "water_staining",
+        "flood":    "water_staining",
+        "stain":    "water_staining",
+        "leak":     "water_staining",
         "vegetation": "vegetation_growth",
-        "plant": "vegetation_growth",
-        "moss": "vegetation_growth",
-        "ivy": "vegetation_growth",
-        "weed": "vegetation_growth",
-        "erosion": "erosion",
-        "erode": "erosion",
-        "wear": "erosion",
+        "plant":    "vegetation_growth",
+        "moss":     "vegetation_growth",
+        "ivy":      "vegetation_growth",
+        "weed":     "vegetation_growth",
+        "erosion":  "erosion",
+        "erode":    "erosion",
+        "wear":     "erosion",
         "corrosion": "corrosion",
-        "rust": "corrosion",
-        "oxidis": "corrosion",
-        "oxidiz": "corrosion",
+        "rust":     "corrosion",
+        "oxidis":   "corrosion",
+        "oxidiz":   "corrosion",
     }
     for keyword, tag in keyword_map.items():
         if keyword in notes_lower and tag not in detected_tags:
@@ -91,11 +80,11 @@ def _mock_analyze(image_path: str, notes: str | None) -> AIAnalysisResult:
     severity = min(5, max(1, len(detected_tags) + 1))
     confidence = 35 if len(detected_tags) > 1 else 20
 
-    prefix = "" if image_present else "No image available for visual analysis. "
+    prefix = "" if image_present else "No image available. "
     summary = (
-        f"{prefix}Rule-based mock detected possible indicators from notes: "
-        f"{', '.join(detected_tags)}. "
-        "This is NOT a real AI result — connect Azure OpenAI Vision for real analysis."
+        f"{prefix}Mock analysis (Azure AI is disabled). "
+        f"Keyword scan of observer notes detected: {', '.join(detected_tags)}. "
+        "This is not real AI output — connect Azure OpenAI Vision for image analysis."
     )
 
     return AIAnalysisResult(
@@ -104,14 +93,13 @@ def _mock_analyze(image_path: str, notes: str | None) -> AIAnalysisResult:
         confidence=confidence,
         summary=summary,
         recommended_action=(
-            "Schedule an in-person inspection to verify these findings before any action."
+            "Human review required before any conservation action is taken. "
+            "Do not touch, clean, repair, climb, or enter the site based on this result alone."
         ),
         provider="mock",
         raw_response=None,
     )
 
-
-# ── Public entry point ─────────────────────────────────────────────────────────
 
 def analyze_observation_image(
     image_path: str,
@@ -119,25 +107,19 @@ def analyze_observation_image(
 ) -> AIAnalysisResult:
     """
     Analyse an observation image and return an AIAnalysisResult.
-
-    This function never raises — all errors are captured inside the provider
-    and returned as a result with provider="azure_openai" and confidence=0.
-    The caller (the route) always gets a result it can write to the database.
+    Never raises — errors are captured inside the provider and returned
+    as a result with confidence=0 so the route can always write to the DB.
     """
-
     if not settings.ai_analysis_enabled:
         return _mock_analyze(image_path, notes)
 
     if not settings.azure_credentials_present:
         result = _mock_analyze(image_path, notes)
         result.summary = (
-            "[AI_ANALYSIS_ENABLED=true but Azure credentials are not set — "
+            "[AI_ANALYSIS_ENABLED=true but Azure credentials are missing — "
             "using mock fallback.] " + result.summary
         )
         return result
 
-    # Credentials are present — use the real Azure OpenAI provider.
-    # The provider's analyze() method catches all exceptions internally and
-    # returns a safe fallback result rather than raising.
     from app.services.providers.azure_openai_provider import AzureOpenAIImageAnalyzer
     return AzureOpenAIImageAnalyzer().analyze(image_path, notes)

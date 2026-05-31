@@ -15,7 +15,6 @@ from app.reports import generate_report
 from app.config import settings
 from app.services.ai_analysis import analyze_observation_image
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UPLOADS_DIR = REPO_ROOT / "data" / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -23,7 +22,6 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 
-# ── App setup ──────────────────────────────────────────────────────────────────
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="HeritageRisk AI", version="0.1.0")
@@ -32,28 +30,20 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
-
-# Make TAG_LABELS available in every template without passing it explicitly
 templates.env.globals["TAG_LABELS"] = TAG_LABELS
 
-
-# ── Health ─────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
-# ── Seed (idempotent demo data) ────────────────────────────────────────────────
-
 @app.post("/seed")
 def seed_data(db: Session = Depends(get_db)):
     from app.seed import seed
-    result = seed(db)
+    seed(db)
     return RedirectResponse(url="/?seeded=1", status_code=303)
 
-
-# ── Dashboard / Home ───────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, db: Session = Depends(get_db)):
@@ -62,12 +52,7 @@ def index(request: Request, db: Session = Depends(get_db)):
     all_obs = db.query(Observation).order_by(Observation.created_at.desc()).all()
 
     high_risk_cases = [c for c in all_cases if c.risk_band == "High"]
-    needs_attention = [
-        c for c in all_cases if c.status in ("Draft", "Needs Review")
-    ]
-    recent_cases = all_cases[:8]
-    recent_obs = all_obs[:6]
-
+    needs_attention = [c for c in all_cases if c.status in ("Draft", "Needs Review")]
     seeded = request.query_params.get("seeded") == "1"
 
     return templates.TemplateResponse(
@@ -80,14 +65,12 @@ def index(request: Request, db: Session = Depends(get_db)):
             "total_cases": len(all_cases),
             "high_risk_count": len(high_risk_cases),
             "needs_attention_count": len(needs_attention),
-            "recent_cases": recent_cases,
-            "recent_obs": recent_obs,
+            "recent_cases": all_cases[:8],
+            "recent_obs": all_obs[:6],
             "seeded": seeded,
         },
     )
 
-
-# ── Sites ──────────────────────────────────────────────────────────────────────
 
 @app.get("/sites", response_class=HTMLResponse)
 def sites_list(request: Request, db: Session = Depends(get_db)):
@@ -127,8 +110,6 @@ def site_detail(site_id: int, request: Request, db: Session = Depends(get_db)):
     )
 
 
-# ── Observations ───────────────────────────────────────────────────────────────
-
 @app.get("/sites/{site_id}/observations/new", response_class=HTMLResponse)
 def observation_new_form(site_id: int, request: Request, db: Session = Depends(get_db)):
     site = db.query(Site).filter(Site.id == site_id).first()
@@ -158,12 +139,11 @@ async def observation_create(
         ext = Path(image.filename).suffix.lower()
         if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
             raise HTTPException(status_code=400, detail="Only JPG, PNG, or WEBP images allowed")
-        unique_name = f"{uuid.uuid4().hex}{ext}"
-        dest = UPLOADS_DIR / unique_name
         content = await image.read()
         if len(content) > 10 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="Image must be under 10 MB")
-        dest.write_bytes(content)
+        unique_name = f"{uuid.uuid4().hex}{ext}"
+        (UPLOADS_DIR / unique_name).write_bytes(content)
         image_filename = unique_name
 
     obs = Observation(
@@ -196,9 +176,10 @@ def observation_analyze(obs_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Observation not found")
 
     image_path = str(UPLOADS_DIR / obs.image_filename) if obs.image_filename else ""
-
     result = analyze_observation_image(image_path=image_path, notes=obs.notes)
 
+    # A real Azure call that returned confidence=0 with only "other" means it failed.
+    # Mock results with the same shape are not failures — they have provider="mock".
     azure_failed = (
         result.provider == "azure_openai"
         and result.confidence == 0
@@ -220,8 +201,8 @@ def observation_analyze(obs_id: int, db: Session = Depends(get_db)):
 
     if not azure_failed:
         existing = set(obs.tags_list)
-        merged = list(existing | set(result.damage_tags))
-        obs.damage_tags = ",".join(sorted(merged))
+        merged = sorted(existing | set(result.damage_tags))
+        obs.damage_tags = ",".join(merged)
 
     db.commit()
     return RedirectResponse(url=f"/observations/{obs_id}", status_code=303)
@@ -247,8 +228,6 @@ def observation_create_case(obs_id: int, db: Session = Depends(get_db)):
 
     return RedirectResponse(url=f"/cases/{case.id}", status_code=303)
 
-
-# ── Cases ──────────────────────────────────────────────────────────────────────
 
 @app.get("/cases", response_class=HTMLResponse)
 def cases_list(
@@ -315,10 +294,8 @@ def case_report_html(case_id: int, request: Request, db: Session = Depends(get_d
     case = db.query(RiskCase).filter(RiskCase.id == case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    obs = case.observation
-    site = obs.site
 
-    generate_report(case, obs, site)
+    generate_report(case, case.observation, case.observation.site)
 
     report_file = Path(case.report_path) if case.report_path else None
     md_content = report_file.read_text(encoding="utf-8") if report_file and report_file.exists() else ""

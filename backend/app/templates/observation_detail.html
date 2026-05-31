@@ -7,10 +7,12 @@
   <a class="btn-secondary" href="/sites/{{ site.id }}">Back to {{ site.name }}</a>
 </div>
 
+{% include "_safety_note.html" %}
+
 {% if obs.image_filename %}
 <img class="obs-full" src="/uploads/{{ obs.image_filename }}" alt="Observation photo" />
 {% else %}
-<div class="obs-full no-image">No image uploaded</div>
+<div class="obs-full no-image obs-placeholder">No image uploaded</div>
 {% endif %}
 
 <dl class="meta">
@@ -19,7 +21,7 @@
   <dt>Damage tags</dt>
   <dd>
     {% if obs.tags_list %}
-      {% for tag in obs.tags_list %}<span class="tag">{{ tag }}</span> {% endfor %}
+      {% for tag in obs.tags_list %}<span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span> {% endfor %}
     {% else %}—{% endif %}
   </dd>
   <dt>Severity</dt><dd>{{ obs.severity }} / 5</dd>
@@ -30,11 +32,9 @@
   <div class="ai-panel-header">
     <h2>AI Analysis
       {% if obs.ai_analysis_status == "complete" %}
-        <span class="ai-badge ai-badge-complete">
-          AZURE OPENAI &mdash; {{ obs.ai_confidence }}% confidence
-        </span>
+        <span class="ai-badge ai-badge-complete">AZURE OPENAI</span>
       {% elif obs.ai_analysis_status == "mock" %}
-        <span class="ai-badge ai-badge-mock">MOCK &mdash; rule-based</span>
+        <span class="ai-badge ai-badge-mock">MOCK / FALLBACK</span>
       {% elif obs.ai_analysis_status == "failed" %}
         <span class="ai-badge ai-badge-failed">FAILED</span>
       {% else %}
@@ -44,61 +44,93 @@
 
     <form method="post" action="/observations/{{ obs.id }}/analyze">
       <button class="btn-primary btn-sm" type="submit">
-        {% if obs.ai_analysis_status in ["complete", "mock", "failed"] %}
-          Re-run Analysis
-        {% else %}
-          Run AI Analysis
-        {% endif %}
+        {% if obs.ai_analysis_status in ["complete", "mock", "failed"] %}Re-run Analysis{% else %}Run AI Analysis{% endif %}
       </button>
     </form>
   </div>
 
-  {# ── Mock notice ─────────────────────────────────────────────────────────── #}
+  {# ── Mock / fallback notice ───────────────────────────────────────────────── #}
   {% if obs.ai_analysis_status == "mock" %}
   <div class="ai-notice ai-notice-mock">
-    <strong>Mock result — not real AI.</strong>
-    This analysis was produced by a rule-based keyword scan of the observer
-    notes. It does not replace a professional assessment.<br />
-    To enable real image analysis, set <code>AI_ANALYSIS_ENABLED=true</code>
-    and add Azure OpenAI credentials to your <code>.env</code> file.
+    <strong>Mock result.</strong>
+    Azure AI is disabled — this was produced by a keyword scan of the observer notes,
+    not real image analysis. Set <code>AI_ANALYSIS_ENABLED=true</code> in <code>.env</code> to enable real analysis.
   </div>
   {% endif %}
 
-  {# ── Failed notice ──────────────────────────────────────────────────────── #}
+  {# ── Failed notice ──────────────────────────────────────────────────────────── #}
   {% if obs.ai_analysis_status == "failed" %}
   <div class="ai-notice ai-notice-failed">
     <strong>Azure OpenAI analysis failed.</strong>
-    The observation is saved and can be reviewed manually.<br />
-    <em>{{ obs.ai_summary }}</em>
+    The observation has been saved and can be reviewed manually.
+    Human review is required before any conservation action is taken.<br />
+    <em>{{ obs.ai_summary or "No further detail available." }}</em>
   </div>
   {% endif %}
 
-  {# ── Azure disclaimer (real result) ─────────────────────────────────────── #}
+  {# ── Real-AI disclaimer ─────────────────────────────────────────────────────── #}
   {% if obs.ai_analysis_status == "complete" %}
   <div class="ai-notice ai-notice-disclaimer">
-    AI output is for human review only. It does not replace professional
-    conservation, engineering, cultural heritage, or emergency assessment.
+    AI output is for human review only. It does not replace professional conservation,
+    engineering, cultural heritage, or emergency assessment. AI suggests visible risk
+    indicators — humans verify and the system tracks.
   </div>
   {% endif %}
 
-  {# ── Result fields ───────────────────────────────────────────────────────── #}
+  {# ── Result fields (complete or mock) ────────────────────────────────────────── #}
   {% if obs.ai_analysis_status in ["complete", "mock"] %}
-  <dl class="meta">
-    <dt>Summary</dt>
-    <dd>{{ obs.ai_summary }}</dd>
+  <dl class="meta ai-fields">
 
-    <dt>Recommended action</dt>
-    <dd>{{ obs.ai_recommended_action or "—" }}</dd>
+    <dt>AI Provider</dt>
+    <dd>
+      {% if obs.ai_provider == "azure_openai" %}Azure OpenAI
+      {% elif obs.ai_provider == "mock" %}Mock (rule-based fallback)
+      {% elif obs.ai_provider %}{{ obs.ai_provider }}
+      {% else %}Not available{% endif %}
+    </dd>
 
-    <dt>Provider</dt>
-    <dd>{{ obs.ai_provider }}</dd>
+    <dt>AI Status</dt>
+    <dd>
+      {% if obs.ai_analysis_status == "complete" %}Completed
+      {% elif obs.ai_analysis_status == "mock" %}Mock / Fallback
+      {% elif obs.ai_analysis_status == "failed" %}Failed
+      {% else %}Not run{% endif %}
+    </dd>
 
     <dt>Confidence</dt>
-    <dd>{{ obs.ai_confidence }}%</dd>
+    <dd>
+      {% if obs.ai_confidence is not none %}
+        {{ obs.ai_confidence }}%
+      {% else %}Not available{% endif %}
+    </dd>
+
+    <dt>Suggested damage tags</dt>
+    <dd>
+      {% if obs.tags_list %}
+        {% for tag in obs.tags_list %}<span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span> {% endfor %}
+      {% else %}Not available{% endif %}
+    </dd>
+
+    <dt>AI Summary</dt>
+    <dd>{{ obs.ai_summary or "Not available" }}</dd>
+
+    <dt>Recommended action</dt>
+    <dd>{{ obs.ai_recommended_action or "Not available" }}</dd>
+
   </dl>
+
+  {# ── Raw JSON response (collapsed) ─────────────────────────────────────────── #}
+  {% if obs.ai_raw_response %}
+  <details class="raw-response">
+    <summary>Raw JSON response</summary>
+    <pre class="raw-response-body">{{ obs.ai_raw_response }}</pre>
+  </details>
+  {% endif %}
+
   {% elif obs.ai_analysis_status != "failed" %}
   <p class="empty">
-    Click <strong>Run AI Analysis</strong> to analyse this observation.
+    Click <strong>Run AI Analysis</strong> to analyse this observation.<br />
+    <small>AI suggests visible risk indicators. Humans verify. The system tracks.</small>
   </p>
   {% endif %}
 

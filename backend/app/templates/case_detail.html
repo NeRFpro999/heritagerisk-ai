@@ -23,6 +23,8 @@
   </div>
 </div>
 
+{% include "_safety_note.html" %}
+
 <div class="case-layout">
 
   {# ── Left column: risk + status ───────────────────────────────────────────── #}
@@ -142,14 +144,21 @@
       </div>
 
       {% if obs.ai_analysis_status == "mock" %}
-        <div class="ai-notice ai-notice-mock">Mock result — rule-based keyword scan, not real AI.</div>
+        <div class="ai-notice ai-notice-mock">
+          <strong>Mock result.</strong>
+          Azure AI is disabled — this is a keyword scan of the observer notes, not real image analysis.
+        </div>
         <dl class="meta">
           <dt>Summary</dt><dd>{{ obs.ai_summary }}</dd>
           <dt>Recommendation</dt><dd>{{ obs.ai_recommended_action or "—" }}</dd>
           <dt>Confidence</dt><dd>{{ obs.ai_confidence }}%</dd>
         </dl>
       {% elif obs.ai_analysis_status == "complete" %}
-        <div class="ai-notice ai-notice-disclaimer">For human review only — not a professional assessment.</div>
+        <div class="ai-notice ai-notice-disclaimer">
+          AI output is for human review only. It does not replace professional conservation,
+          engineering, or emergency assessment. AI suggests visible risk indicators —
+          humans verify and the system tracks.
+        </div>
         <dl class="meta">
           <dt>Summary</dt><dd>{{ obs.ai_summary }}</dd>
           <dt>Recommendation</dt><dd>{{ obs.ai_recommended_action or "—" }}</dd>

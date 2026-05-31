@@ -84,7 +84,42 @@ class TestMockAnalysis:
             result = analyze_observation_image(image_path="", notes="crack")
 
         assert result.provider == "mock"
-        assert "missing" in result.summary.lower() or "credentials" in result.summary.lower()
+        assert "credentials" in result.summary.lower()
+
+    def test_mock_summary_says_demo_or_triage_only(self):
+        """Mock summary must state it is for demonstration/triage only."""
+        from app.services.ai_analysis import _mock_analyze
+
+        result = _mock_analyze("", "crack in wall")
+        lower = result.summary.lower()
+        assert "demonstration" in lower or "triage" in lower or "mock" in lower
+
+    def test_mock_recommended_action_is_safe(self):
+        """Mock recommended action must not suggest touching, repairing, or entering a site."""
+        from app.services.ai_analysis import _mock_analyze
+
+        result = _mock_analyze("", "crack in wall")
+        lower = result.recommended_action.lower()
+        # Must contain a human-review directive
+        assert "human" in lower or "review" in lower or "inspection" in lower
+        # Must not instruct the user to perform the action (imperative form)
+        for unsafe_instruction in ("please repair", "you should repair", "go repair",
+                                   "please clean", "please touch", "please climb",
+                                   "please enter"):
+            assert unsafe_instruction not in lower, (
+                f"Unsafe instruction found in mock recommended_action: {unsafe_instruction!r}"
+            )
+
+    def test_mock_result_never_implies_final_decision(self):
+        """Mock summary must not claim AI is making a final conservation decision."""
+        from app.services.ai_analysis import _mock_analyze
+
+        result = _mock_analyze("", "erosion on plinth")
+        lower = result.summary.lower()
+        for final_phrase in ("is safe", "is not safe", "must be repaired", "confirmed damage"):
+            assert final_phrase not in lower, (
+                f"Mock summary implies final decision: {final_phrase!r}"
+            )
 
 
 # ---------------------------------------------------------------------------

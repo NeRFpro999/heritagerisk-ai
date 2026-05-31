@@ -1,9 +1,8 @@
 """
-Rule-based risk scoring — placeholder for a future CV model.
+Rule-based risk scoring — each visible damage tag has a weight,
+multiplied by severity (1–5), capped at 100.
 
-Tags match the taxonomy used by the AI provider (ai_analysis.py / azure_openai_provider.py).
-Score = min(100, sum(tag weights) × severity)
-Band  : < 30 → Low  |  30–60 → Medium  |  > 60 → High
+Band thresholds: Low < 30 | Medium 30–60 | High > 60
 """
 
 TAG_WEIGHTS: dict[str, int] = {
@@ -18,7 +17,7 @@ TAG_WEIGHTS: dict[str, int] = {
 
 ALL_TAGS: list[str] = list(TAG_WEIGHTS.keys())
 
-# Human-readable display labels for templates
+# Human-readable labels used in templates
 TAG_LABELS: dict[str, str] = {
     "crack":             "Crack",
     "erosion":           "Erosion",
@@ -31,7 +30,7 @@ TAG_LABELS: dict[str, str] = {
 
 
 def calculate_risk(tags: list[str], severity: int) -> tuple[int, str]:
-    """Return (score 0-100, band string)."""
+    """Return (score 0–100, band string)."""
     tag_sum = sum(TAG_WEIGHTS.get(t, 0) for t in tags)
     score = min(100, tag_sum * max(1, severity))
 
