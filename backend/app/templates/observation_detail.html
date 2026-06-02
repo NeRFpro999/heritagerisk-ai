@@ -52,9 +52,7 @@
   {# ── Mock / fallback notice ───────────────────────────────────────────────── #}
   {% if obs.ai_analysis_status == "mock" %}
   <div class="ai-notice ai-notice-mock">
-    <strong>Mock result.</strong>
-    Azure AI is disabled — this was produced by a keyword scan of the observer notes,
-    not real image analysis. Set <code>AI_ANALYSIS_ENABLED=true</code> in <code>.env</code> to enable real analysis.
+    Mock analysis used because Azure AI is disabled or unavailable.
   </div>
   {% endif %}
 
@@ -68,15 +66,6 @@
   </div>
   {% endif %}
 
-  {# ── Real-AI disclaimer ─────────────────────────────────────────────────────── #}
-  {% if obs.ai_analysis_status == "complete" %}
-  <div class="ai-notice ai-notice-disclaimer">
-    AI output is for human review only. It does not replace professional conservation,
-    engineering, cultural heritage, or emergency assessment. AI suggests visible risk
-    indicators — humans verify and the system tracks.
-  </div>
-  {% endif %}
-
   {# ── Result fields (complete or mock) ────────────────────────────────────────── #}
   {% if obs.ai_analysis_status in ["complete", "mock"] %}
   <dl class="meta ai-fields">
@@ -84,7 +73,7 @@
     <dt>AI Provider</dt>
     <dd>
       {% if obs.ai_provider == "azure_openai" %}Azure OpenAI
-      {% elif obs.ai_provider == "mock" %}Mock (rule-based fallback)
+      {% elif obs.ai_provider == "mock" %}Mock
       {% elif obs.ai_provider %}{{ obs.ai_provider }}
       {% else %}Not available{% endif %}
     </dd>

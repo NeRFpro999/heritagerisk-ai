@@ -223,7 +223,7 @@ class TestAIAnalysisSummary:
             ai_summary="Mock: crack detected.",
         )
         md = _generate(tmp_path, obs=obs)
-        assert "Mock/fallback analysis" in md
+        assert "Mock analysis" in md
 
     def test_failed_shows_failure_message(self, tmp_path):
         obs = _make_observation(ai_analysis_status="failed", ai_summary=None)
@@ -253,7 +253,7 @@ class TestAIAnalysisSummary:
     def test_report_contains_triage_principle(self, tmp_path):
         obs = _make_observation(ai_analysis_status="complete", ai_summary="Crack detected.")
         md = _generate(tmp_path, obs=obs)
-        assert "Humans verify" in md
+        assert "visible risk triage" in md
 
 
 # ---------------------------------------------------------------------------

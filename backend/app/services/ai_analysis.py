@@ -80,11 +80,10 @@ def _mock_analyze(image_path: str, notes: str | None) -> AIAnalysisResult:
     severity = min(5, max(1, len(detected_tags) + 1))
     confidence = 35 if len(detected_tags) > 1 else 20
 
-    prefix = "" if image_present else "No image available. "
+    prefix = "" if image_present else "No image uploaded. "
     summary = (
-        f"{prefix}Mock analysis (Azure AI is disabled). "
-        f"Keyword scan of observer notes detected: {', '.join(detected_tags)}. "
-        "This is not real AI output — connect Azure OpenAI Vision for image analysis."
+        f"{prefix}Mock analysis used because Azure AI is disabled or unavailable. "
+        f"Keywords detected in notes: {', '.join(detected_tags)}."
     )
 
     return AIAnalysisResult(
@@ -93,8 +92,8 @@ def _mock_analyze(image_path: str, notes: str | None) -> AIAnalysisResult:
         confidence=confidence,
         summary=summary,
         recommended_action=(
-            "Human review required before any conservation action is taken. "
-            "Do not touch, clean, repair, climb, or enter the site based on this result alone."
+            "HeritageRisk AI is for visible risk triage only. "
+            "It does not replace professional conservation, engineering, emergency, legal, or cultural heritage advice."
         ),
         provider="mock",
         raw_response=None,
@@ -116,8 +115,8 @@ def analyze_observation_image(
     if not settings.azure_credentials_present:
         result = _mock_analyze(image_path, notes)
         result.summary = (
-            "[AI_ANALYSIS_ENABLED=true but Azure credentials are missing — "
-            "using mock fallback.] " + result.summary
+            "Mock analysis used because Azure AI is disabled or unavailable. "
+            + result.summary
         )
         return result
 

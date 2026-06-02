@@ -47,3 +47,34 @@ Today's focus:
 - [ ] Markdown report is generated
 - [ ] HTML report renders
 - [ ] Raw Markdown download works
+
+---
+
+## 2 June 2026 Manual Smoke Test
+
+Run this checklist in a real browser against `python backend/run.py` before any demo or release.
+
+- [ ] Dashboard loads
+- [ ] Seed data loads without bad duplication
+- [ ] Site list loads
+- [ ] New site can be created
+- [ ] Site detail page loads
+- [ ] Observation image can be uploaded
+- [ ] Observation detail page loads
+- [ ] Mock AI analysis works without Azure credentials
+- [ ] Risk case can be created
+- [ ] Case list loads
+- [ ] Case detail loads
+- [ ] Case status can be updated
+- [ ] HTML evidence report opens
+- [ ] Raw Markdown report opens
+- [ ] Safety note appears on observation/case/report pages
+- [ ] Mock AI is clearly labelled as mock/fallback
+
+## Issues Found
+
+1.
+2.
+3.
+4.
+5.

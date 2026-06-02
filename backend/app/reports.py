@@ -30,7 +30,7 @@ def _ai_summary_line(observation) -> str:
     if not summary:
         return "No AI analysis has been run for this observation."
     if status == "mock":
-        return f"[Mock/fallback analysis — not real AI output] {summary}"
+        return f"Mock analysis used because Azure AI is disabled or unavailable. {summary}"
     # status == "complete"
     return summary
 
@@ -108,10 +108,7 @@ Human review recommended before any action is taken.
 
 ## 6. Safety and Ethics Notice
 
-HeritageRisk AI is for visible risk triage only.
-It does not replace professional conservation, engineering, emergency,
-legal, or cultural heritage advice.
-AI suggests visible risk indicators. Humans verify. The system tracks.
+HeritageRisk AI is for visible risk triage only. It does not replace professional conservation, engineering, emergency, legal, or cultural heritage advice.
 
 ---
 
