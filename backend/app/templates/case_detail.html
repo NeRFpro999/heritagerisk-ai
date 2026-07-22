@@ -20,6 +20,7 @@
   <div class="page-header-actions">
     <a class="btn-secondary" href="/cases/{{ case.id }}/report">View Report</a>
     <a class="btn-secondary" href="/cases/{{ case.id }}/report.md">Download .md</a>
+    <a class="btn-primary" href="/cases/{{ case.id }}/status">Update Status</a>
   </div>
 </div>
 
@@ -45,6 +46,39 @@
       <p class="score-label">
         <span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }} Risk</span>
       </p>
+
+      <div class="risk-breakdown">
+        <h3>Explainable Risk Breakdown</h3>
+
+        <div class="risk-weight-list">
+          {% if risk_breakdown.tag_weights %}
+            {% for item in risk_breakdown.tag_weights %}
+            <div class="risk-weight-item">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.weight }}</strong>
+            </div>
+            {% endfor %}
+          {% else %}
+          <p class="empty">No finalized damage tags were recorded.</p>
+          {% endif %}
+        </div>
+
+        <dl class="meta risk-breakdown-meta">
+          <dt>Severity multiplier</dt>
+          <dd>{{ risk_breakdown.severity }}</dd>
+          <dt>Equation</dt>
+          <dd>
+            ({{ risk_breakdown.tag_weights | map(attribute="weight") | join(" + ") or "0" }})
+            × Severity {{ risk_breakdown.severity }}
+            = {{ risk_breakdown.raw_score }}
+            {% if risk_breakdown.capped %}
+            → 100 (capped)
+            {% endif %}
+          </dd>
+          <dt>Band thresholds</dt>
+          <dd>Low: 0-29 · Medium: 30-59 · High: 60-100</dd>
+        </dl>
+      </div>
 
       <dl class="meta mt">
         <dt>Site</dt>
@@ -100,8 +134,19 @@
     <div class="card">
       <h2>Observation</h2>
 
-      {% if obs.image_filename %}
-      <img class="obs-detail-img" src="/uploads/{{ obs.image_filename }}" alt="Observation photo" />
+      {% if obs.images | length == 1 %}
+      <img class="obs-detail-img" src="{{ obs.images[0].image_url }}" alt="Observation photo" />
+      {% elif obs.images | length > 1 %}
+      <div class="obs-image-grid case-evidence-grid" aria-label="Risk case evidence images">
+        {% for image in obs.images %}
+        <figure class="obs-image-card">
+          <img class="obs-grid-image"
+               src="{{ image.image_url }}"
+               alt="Evidence image {{ loop.index }}" />
+          <figcaption>Image {{ loop.index }} of {{ obs.images | length }}</figcaption>
+        </figure>
+        {% endfor %}
+      </div>
       {% else %}
       <div class="obs-detail-img obs-placeholder"><span>No image uploaded</span></div>
       {% endif %}

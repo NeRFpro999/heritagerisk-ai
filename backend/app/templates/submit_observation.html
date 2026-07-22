@@ -1,0 +1,304 @@
+{% extends "base.html" %}
+{% block title %}Submit Observation - HeritageRisk AI{% endblock %}
+
+{% block content %}
+<style>
+  .public-submit {
+    max-width: 860px;
+    margin: 0 auto;
+  }
+
+  .public-submit-header {
+    margin-bottom: 1.25rem;
+  }
+
+  .public-submit-header h1 {
+    color: var(--navy);
+    margin-bottom: .35rem;
+  }
+
+  .public-submit-subtitle {
+    color: var(--slate);
+    max-width: 680px;
+  }
+
+  .public-warning {
+    background: #fff7ed;
+    border: 1px solid #fed7aa;
+    border-left: 4px solid #c2410c;
+    border-radius: var(--radius);
+    color: #7c2d12;
+    margin-bottom: 1.25rem;
+    padding: 1rem 1.15rem;
+  }
+
+  .public-warning h2 {
+    color: #7c2d12;
+    font-size: 1rem;
+    margin-bottom: .35rem;
+  }
+
+  .public-submit-form {
+    max-width: none;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .public-submit-section {
+    padding: 1.35rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .public-submit-section:last-child {
+    border-bottom: 0;
+  }
+
+  .public-submit-section h2 {
+    margin-bottom: .85rem;
+  }
+
+  .site-readonly {
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: .75rem .9rem;
+  }
+
+  .site-readonly strong {
+    display: block;
+    color: var(--navy);
+  }
+
+  .site-readonly span {
+    color: var(--slate);
+    font-size: .85rem;
+  }
+
+  .upload-box {
+    border: 1px dashed #94a3b8;
+    border-radius: var(--radius);
+    background: #f8fafc;
+    padding: 1rem;
+  }
+
+  .taxonomy-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .severity-select {
+    max-width: 360px;
+  }
+
+  .review-submit-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .review-submit-note {
+    color: var(--slate);
+    font-size: .85rem;
+    max-width: 460px;
+  }
+
+  @media (max-width: 720px) {
+    .public-submit {
+      max-width: none;
+    }
+
+    .public-submit-section {
+      padding: 1.15rem;
+    }
+
+    .taxonomy-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .review-submit-row {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .review-submit-row .btn-primary,
+    .review-submit-row .btn-secondary {
+      justify-content: center;
+      width: 100%;
+    }
+  }
+</style>
+
+<div class="public-submit">
+  <div class="public-submit-header">
+    <p class="breadcrumb">
+      <a href="/">Dashboard</a> / Submit Observation
+    </p>
+    <h1>Submit Heritage Observation</h1>
+    <p class="public-submit-subtitle">
+      Record visible evidence for human review. Do not make safety, repair, or conservation decisions in this form.
+    </p>
+  </div>
+
+  <section class="public-warning" role="alert" aria-label="Safety and ethics warning">
+    <h2>Safety &amp; Ethics Warning</h2>
+    <p>
+      Only take photos safely from public or permitted areas. Do not trespass,
+      enter unsafe places, climb structures, touch or clean heritage material,
+      scrape objects, disturb sites, or upload private or culturally sensitive content.
+    </p>
+  </section>
+
+  <form class="form-card public-submit-form"
+        method="post"
+        action="/observations/submit"
+        enctype="multipart/form-data"
+        data-submit-form>
+    <input type="hidden" name="response_mode" value="html" />
+
+    <section class="public-submit-section">
+      <h2>Site</h2>
+      {% if site %}
+      <input type="hidden" name="site_id" value="{{ site.id }}" />
+      <input type="hidden" name="site_name" value="" />
+      <input type="hidden" name="site_location" value="" />
+      <input type="hidden" name="site_description" value="" />
+      <div class="site-readonly">
+        <strong>{{ site.name }}</strong>
+        <span>{{ site.location or "Location not recorded" }}</span>
+      </div>
+      {% elif sites %}
+      <label for="site_id">Existing heritage site</label>
+      <select id="site_id" name="site_id">
+        <option value="">Select a site</option>
+        {% for candidate in sites %}
+        <option value="{{ candidate.id }}">{{ candidate.name }}{% if candidate.location %} - {{ candidate.location }}{% endif %}</option>
+        {% endfor %}
+      </select>
+      <p class="muted">Or describe a new site below if it is not listed.</p>
+      <label for="site_name">New site name</label>
+      <input id="site_name"
+             name="site_name"
+             type="text"
+             placeholder="e.g. Town Hall War Memorial" />
+      <label for="site_location">New site location</label>
+      <input id="site_location"
+             name="site_location"
+             type="text"
+             placeholder="Street, suburb, city, or landmark" />
+      <label for="site_description">New site description</label>
+      <textarea id="site_description"
+                name="site_description"
+                rows="3"
+                placeholder="Briefly describe the heritage place so it can be reviewed."></textarea>
+      {% else %}
+      <label for="site_name">Site name <span class="required">*</span></label>
+      <input id="site_name"
+             name="site_name"
+             type="text"
+             required
+             placeholder="e.g. Town Hall War Memorial" />
+      <label for="site_location">Location</label>
+      <input id="site_location"
+             name="site_location"
+             type="text"
+             placeholder="Street, suburb, city, or landmark" />
+      <label for="site_description">Site description</label>
+      <textarea id="site_description"
+                name="site_description"
+                rows="3"
+                placeholder="Briefly describe the heritage place so it can be reviewed."></textarea>
+      {% endif %}
+    </section>
+
+    <section class="public-submit-section">
+      <h2>Evidence</h2>
+
+      <label for="contributor_notes">Contributor notes</label>
+      <textarea id="contributor_notes"
+                name="contributor_notes"
+                rows="6"
+                placeholder="Describe visible evidence only: location on the site, approximate size, colour, pattern, and when you noticed it."></textarea>
+
+      <label for="images">Observation images <span class="required">*</span></label>
+      <div class="upload-box">
+        <input id="images"
+               name="images"
+               type="file"
+               multiple
+               accept="image/*"
+               required />
+      </div>
+      <small>Upload up to 6 JPG, PNG, or WEBP files, no larger than 10 MB each.</small>
+    </section>
+
+    <section class="public-submit-section">
+      <h2>Visible Indicators</h2>
+      <input id="manually_selected_tags" name="manually_selected_tags" type="hidden" value="" />
+
+      {% set damage_tags = all_tags if all_tags is defined else [
+        "crack",
+        "erosion",
+        "graffiti",
+        "corrosion",
+        "water_staining",
+        "vegetation_growth",
+        "surface_loss",
+        "fire_damage",
+        "other"
+      ] %}
+
+      <fieldset>
+        <legend>Damage taxonomy</legend>
+        <div class="checkbox-grid taxonomy-grid">
+          {% for tag in damage_tags %}
+          <label class="checkbox-label">
+            <input type="checkbox" value="{{ tag }}" data-damage-tag />
+            {{ TAG_LABELS.get(tag, tag.replace("_", " ") | title) }}
+          </label>
+          {% endfor %}
+        </div>
+      </fieldset>
+
+      <label for="severity">Initial visible severity <span class="required">*</span></label>
+      <select id="severity" class="severity-select" name="severity" required>
+        <option value="1">1 - Very minor visible issue</option>
+        <option value="2">2 - Low visible concern</option>
+        <option value="3">3 - Moderate visible concern</option>
+        <option value="4">4 - Serious visible concern</option>
+        <option value="5">5 - Severe visible concern</option>
+      </select>
+      <small>Severity is a triage estimate for review, not a structural assessment.</small>
+    </section>
+
+    <section class="public-submit-section">
+      <div class="review-submit-row">
+        <p class="review-submit-note">
+          This observation will be sent to the human review queue before analysis, case creation, or routing.
+        </p>
+        <button class="btn-primary" type="submit">Submit Observation for Review</button>
+      </div>
+    </section>
+  </form>
+</div>
+
+<script>
+  (() => {
+    const form = document.querySelector("[data-submit-form]");
+    const hiddenTags = document.getElementById("manually_selected_tags");
+    const checkboxes = Array.from(document.querySelectorAll("[data-damage-tag]"));
+
+    function syncSelectedTags() {
+      hiddenTags.value = checkboxes
+        .filter((checkbox) => checkbox.checked)
+        .map((checkbox) => checkbox.value)
+        .join(",");
+    }
+
+    checkboxes.forEach((checkbox) => {
+      checkbox.addEventListener("change", syncSelectedTags);
+    });
+    form.addEventListener("submit", syncSelectedTags);
+  })();
+</script>
+{% endblock %}

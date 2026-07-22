@@ -9,32 +9,47 @@
       action="/sites/{{ site.id }}/observations"
       enctype="multipart/form-data">
 
-  <label for="image">Photo</label>
-  <input id="image" name="image" type="file" accept=".jpg,.jpeg,.png,.webp" />
-  <small>JPG, PNG or WEBP — max 10 MB. Optional but recommended.</small>
+  <div class="form-note form-note-safety">
+    <strong>Safety first.</strong>
+    Only upload photos taken safely from public or permitted areas. Do not trespass, enter unsafe areas, touch, clean, repair, scrape, climb, or disturb heritage material.
+  </div>
 
-  <label for="notes">Damage notes</label>
+  <label for="image">Smartphone photo of the visible issue</label>
+  <input id="image" name="image" type="file" accept=".jpg,.jpeg,.png,.webp" />
+  <small>Accepted image types: JPG, PNG, WEBP. Maximum image size: 10 MB. One photo only for this MVP.</small>
+
+  <label for="notes">Visible observation notes</label>
   <textarea id="notes" name="notes" rows="5"
-    placeholder="Describe visible damage: location, extent, any changes since last visit…"></textarea>
+    placeholder="Describe only what you can see, such as location on the site, approximate size, colour, pattern, or whether the issue appears recent."></textarea>
+  <small>Do not diagnose structural safety or cause. Record visible evidence only.</small>
 
   <fieldset>
-    <legend>Visible damage types <small>(tick all that apply)</small></legend>
+    <legend>Visible indicators <small>(tick all that apply)</small></legend>
+    <p class="fieldset-help">These are visible indicators, not confirmed professional diagnoses.</p>
     <div class="checkbox-grid">
       {% for tag in all_tags %}
       <label class="checkbox-label">
         <input type="checkbox" name="damage_tags" value="{{ tag }}" />
-        {{ tag | capitalize }}
+        {{ TAG_LABELS.get(tag, tag) }}
       </label>
       {% endfor %}
     </div>
   </fieldset>
 
-  <label for="severity">Severity (1 = minor, 5 = severe)</label>
+  <label for="severity">Initial triage severity</label>
   <div class="range-row">
     <input id="severity" name="severity" type="range" min="1" max="5" value="1"
            oninput="document.getElementById('sev-val').textContent = this.value" />
     <span id="sev-val">1</span>
   </div>
+  <small>Severity is an initial triage estimate, not a structural assessment.</small>
+  <ol class="severity-guide">
+    <li><strong>1</strong> = very minor visible issue</li>
+    <li><strong>2</strong> = low visible concern</li>
+    <li><strong>3</strong> = moderate visible concern</li>
+    <li><strong>4</strong> = serious visible concern requiring review</li>
+    <li><strong>5</strong> = severe visible concern requiring priority review</li>
+  </ol>
 
   <div class="form-actions">
     <button class="btn-primary" type="submit">Save Observation</button>

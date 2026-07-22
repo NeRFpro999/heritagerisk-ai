@@ -15,19 +15,44 @@
   <div class="hero-text">
     <h1>Heritage Risk Dashboard</h1>
     <p class="hero-sub">
-      Citizen-powered early warning for heritage site deterioration.
-      Upload photos, identify damage, create risk cases, route to the right authority.
+      Track heritage-site observations from photo evidence to visible-risk cases,
+      review status, and downloadable evidence reports.
     </p>
     <div class="hero-actions">
-      <a class="btn-primary" href="/sites/new">+ Add Site</a>
-      <a class="btn-secondary" href="/sites">View All Sites</a>
-      <a class="btn-secondary" href="/cases">View All Cases</a>
-      {% if total_sites == 0 %}
-      <form method="post" action="/seed" style="display:inline">
-        <button class="btn-outline" type="submit">Load Demo Data</button>
-      </form>
+      <a class="btn-primary" href="/observations/submit">Submit Observation</a>
+      <a class="btn-secondary" href="/sites/new">Reviewer Intake</a>
+      <a class="btn-secondary" href="/sites">View Sites</a>
+      {% if upload_observation_site %}
+      <a class="btn-secondary" href="/sites/{{ upload_observation_site.id }}/observations/new">Upload Observation</a>
       {% endif %}
+      <a class="btn-secondary" href="/cases">View Risk Cases</a>
+      {% if observations_awaiting_review_count %}
+      <a class="btn-primary" href="/observations/review">Review Queue ({{ observations_awaiting_review_count }})</a>
+      {% else %}
+      <a class="btn-secondary" href="/observations/review">Review Queue</a>
+      {% endif %}
+      <form method="post" action="/seed" style="display:inline">
+        <button class="btn-outline" type="submit">Seed Demo Data</button>
+      </form>
     </div>
+  </div>
+</section>
+
+<section class="dashboard-status-row" aria-label="Dashboard safety and AI status">
+  <div class="safety-note dashboard-safety-note" role="note" aria-label="Safety notice">
+    <strong>Safety boundary.</strong>
+    HeritageRisk AI supports visible-risk triage only. It does not replace professional conservation, engineering, legal, emergency, or cultural heritage advice. Human review is required.
+  </div>
+  <div class="provider-panel" aria-label="AI provider status">
+    <span class="provider-label">AI provider</span>
+    {% if azure_enabled %}
+    <span class="provider-pill provider-pill-live">Azure enabled</span>
+    {% else %}
+    <span class="provider-pill provider-pill-mock">Azure disabled</span>
+    {% endif %}
+    {% if mock_fallback_available %}
+    <span class="provider-pill provider-pill-fallback">Mock fallback available</span>
+    {% endif %}
   </div>
 </section>
 
@@ -35,51 +60,127 @@
 <section class="stats-row">
   <div class="stat-card">
     <span class="stat-number">{{ total_sites }}</span>
-    <span class="stat-label">Heritage Sites</span>
+    <span class="stat-label">Total Sites</span>
   </div>
   <div class="stat-card">
-    <span class="stat-number">{{ total_obs }}</span>
-    <span class="stat-label">Observations</span>
-  </div>
-  <div class="stat-card">
-    <span class="stat-number">{{ total_cases }}</span>
-    <span class="stat-label">Risk Cases</span>
-  </div>
-  <div class="stat-card stat-card-alert">
-    <span class="stat-number">{{ high_risk_count }}</span>
-    <span class="stat-label">High Risk</span>
+    <span class="stat-number">{{ total_observations_submitted }}</span>
+    <span class="stat-label">Total Observations Submitted</span>
   </div>
   <div class="stat-card stat-card-warn">
-    <span class="stat-number">{{ needs_attention_count }}</span>
-    <span class="stat-label">Needs Attention</span>
+    <span class="stat-number">{{ observations_awaiting_review_count }}</span>
+    <span class="stat-label">Observations Awaiting Review</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-number">{{ approved_observations_count }}</span>
+    <span class="stat-label">Approved Observations</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-number">{{ total_risk_cases_generated }}</span>
+    <span class="stat-label">Total Risk Cases Generated</span>
+  </div>
+  <div class="stat-card stat-card-alert">
+    <span class="stat-number">{{ high_priority_cases_count }}</span>
+    <span class="stat-label">High Priority Cases</span>
   </div>
 </section>
 
+<p class="dashboard-priority-note">
+  {{ needs_review_count }} risk case{% if needs_review_count != 1 %}s{% endif %} in Needs Review;
+  {{ priority_review_count }} case{% if priority_review_count != 1 %}s{% endif %} in Priority Review.
+</p>
+
+<section class="case-status-overview card">
+  <div class="card-header">
+    <h2>Case Statuses</h2>
+    <a class="btn-secondary btn-sm" href="/cases">View cases</a>
+  </div>
+  <div class="case-status-grid">
+    {% for status, count in case_status_counts.items() %}
+    <div class="case-status-tile">
+      <span class="status-badge status-{{ status | lower | replace(' ', '-') }}">{{ status }}</span>
+      <strong>{{ count }}</strong>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+{% if observations_awaiting_review_count %}
+<section class="review-queue-cta">
+  <div>
+    <strong>{{ observations_awaiting_review_count }} observation{% if observations_awaiting_review_count != 1 %}s{% endif %} awaiting human review</strong>
+    <p>Approve, reject, or mark sensitive before any AI analysis can run.</p>
+  </div>
+  <a class="btn-primary" href="/observations/review">Open Review Queue</a>
+</section>
+{% endif %}
+
 {# ── How it works ─────────────────────────────────────────────────────────── #}
 <section class="how-it-works card">
-  <h2>How HeritageRisk AI Works</h2>
+  <h2>Human-in-the-Loop Workflow</h2>
   <div class="workflow-steps">
     <div class="workflow-step">
       <span class="step-number">1</span>
-      <h3>Detect</h3>
-      <p>Citizens upload guided smartphone photos of heritage sites. Notes describe visible damage — cracks, corrosion, graffiti, water staining, vegetation growth.</p>
+      <h3>Submit</h3>
+      <p>A contributor uploads site details, notes, and one or more safely taken photos.</p>
     </div>
     <div class="workflow-step">
       <span class="step-number">2</span>
-      <h3>Analyse</h3>
-      <p>AI or manual review identifies visible risk indicators. A rule-based risk score is calculated. The system creates a structured risk case with an evidence report.</p>
+      <h3>Gate</h3>
+      <p>A human checks privacy, sensitivity, relevance, and evidence quality before AI access.</p>
     </div>
     <div class="workflow-step">
       <span class="step-number">3</span>
-      <h3>Verify</h3>
-      <p>A human reviewer verifies the case, updates the status, and confirms the damage assessment before any action is taken.</p>
+      <h3>Analyze</h3>
+      <p>Azure OpenAI or the mock fallback drafts visible indicators, uncertainty, and a next step.</p>
     </div>
     <div class="workflow-step">
       <span class="step-number">4</span>
-      <h3>Route</h3>
-      <p>Verified cases are routed to the responsible site owner, local council, heritage authority, or conservation team. Response and action status is tracked.</p>
+      <h3>Finalize</h3>
+      <p>The reviewer accepts, edits, or rejects the AI draft and confirms final tags and severity.</p>
+    </div>
+    <div class="workflow-step">
+      <span class="step-number">5</span>
+      <h3>Track</h3>
+      <p>A Risk Case and evidence report are created, then manually verified, routed, and closed.</p>
     </div>
   </div>
+</section>
+
+{# ── Recent activity ─────────────────────────────────────────────────────── #}
+<section class="card activity-card">
+  <div class="card-header">
+    <h2>Recent Activity</h2>
+    <a class="btn-secondary btn-sm" href="/observations/review">Review queue</a>
+  </div>
+  {% if recent_activity %}
+  <div class="activity-feed">
+    {% for activity in recent_activity %}
+    <a class="activity-item" href="{{ activity.href }}">
+      <div class="activity-main">
+        <span class="activity-kind">{{ activity.kind }}</span>
+        <strong>{{ activity.title }}</strong>
+        <span>{{ activity.site_name }}</span>
+      </div>
+      <div class="activity-meta">
+        {% if activity.risk_band %}
+        <span class="band band-{{ activity.risk_band | lower }}">{{ activity.risk_band }}</span>
+        {% else %}
+        <span class="review-status review-status-{{ activity.status | lower | replace(' ', '-') }}">{{ activity.status }}</span>
+        {% endif %}
+        <time>
+          {% if activity.created_at %}
+          {{ activity.created_at.strftime("%d %b %Y, %H:%M") }}
+          {% else %}
+          Date unavailable
+          {% endif %}
+        </time>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">No recent activity yet.</p>
+  {% endif %}
 </section>
 
 {# ── Recent Cases + Recent Observations ───────────────────────────────────── #}
@@ -121,8 +222,12 @@
     <div class="obs-feed">
       {% for obs in recent_obs %}
       <div class="obs-feed-item">
-        {% if obs.image_filename %}
-        <img class="obs-feed-thumb" src="/uploads/{{ obs.image_filename }}" alt="Observation" />
+        {% if obs.human_review_status.value == "Sensitive" %}
+        <div class="obs-feed-thumb obs-placeholder">
+          <span>Hidden</span>
+        </div>
+        {% elif obs.primary_image_url %}
+        <img class="obs-feed-thumb" src="{{ obs.primary_image_url }}" alt="Observation" />
         {% else %}
         <div class="obs-feed-thumb obs-placeholder">
           <span>No image</span>
@@ -130,11 +235,19 @@
         {% endif %}
         <div class="obs-feed-body">
           <a class="obs-feed-site" href="/sites/{{ obs.site.id }}">{{ obs.site.name }}</a>
+          {% if obs.human_review_status.value == "Sensitive" %}
+          <p class="obs-feed-notes">Sensitive evidence hidden from dashboard activity.</p>
+          {% else %}
           <p class="obs-feed-notes">{{ (obs.notes or "No notes")[:120] }}{% if obs.notes and obs.notes|length > 120 %}…{% endif %}</p>
+          {% endif %}
           <div class="obs-feed-meta">
+            {% if obs.human_review_status.value == "Sensitive" %}
+            <span class="review-status review-status-sensitive">Sensitive</span>
+            {% else %}
             {% for tag in obs.tags_list[:3] %}
             <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
             {% endfor %}
+            {% endif %}
             <span class="obs-feed-date">{{ obs.created_at.strftime("%d %b %Y") }}</span>
           </div>
           <a class="obs-feed-link" href="/observations/{{ obs.id }}">View →</a>

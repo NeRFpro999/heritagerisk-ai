@@ -2,15 +2,15 @@
 Demo seed data — three sites covering High/Medium/Low risk and all workflow stages.
 Idempotent: skips records that already exist. Safe to run multiple times.
 
-  Old Stone Church     — crack + water_staining, sev 5 → score 70 → High,   Needs Review
-  Historic Iron Bridge — corrosion + vegetation_growth, sev 4 → score 44 → Medium, Verified
-  Memorial Statue      — graffiti, sev 2               → score  6 → Low,    Routed
+  Old Stone Church     — crack + erosion + water_staining, sev 4 → score 84 → High,   Needs Review
+  Historic Iron Bridge — corrosion + vegetation_growth + water_staining, sev 3 → score 51 → Medium, Verified
+  Memorial Statue      — graffiti + other, sev 2                 → score 10 → Low,    Routed
 """
 
 from datetime import datetime, timedelta
 
 from app.database import SessionLocal, engine, Base
-from app.models import Site, Observation, RiskCase
+from app.models import HumanReviewStatus, Site, Observation, RiskCase
 from app.risk import calculate_risk
 from app.reports import generate_report
 
@@ -46,90 +46,93 @@ SEED_SITES = [
 ]
 
 SEED_OBSERVATIONS = [
-    # ── Old Stone Church — crack + water_staining, sev 5 → score 70 → High, Needs Review ──
+    # ── Old Stone Church — crack + erosion + water_staining, sev 4 → score 84 → High, Needs Review ──
     {
         "site_name": "Old Stone Church",
         "notes": (
-            "Vertical crack visible on the south-east wall face, approximately 80 cm in length "
-            "and widening at the base. Significant water staining extends across the lower "
-            "course of stones in the same bay. Mortar loss observed between several stones. "
-            "Crack appears to have opened since the last community observation six months ago."
+            "Vertical crack visible on the south-east wall face, approximately 80 cm long. "
+            "Water staining is visible below the crack and across the lower stone courses. "
+            "Several nearby stones show surface erosion and small areas of missing mortar. "
+            "The notes suggest this area should be reviewed by a qualified person before any "
+            "conservation action is considered."
         ),
-        "damage_tags": "crack,water_staining",
-        "severity": 5,
+        "damage_tags": "crack,erosion,water_staining",
+        "severity": 4,
         "ai_analysis_status": "mock",
         "ai_summary": (
-            "Visible indicators detected: crack, water_staining. "
-            "A widening vertical crack combined with active water staining is a recognised "
-            "pattern associated with structural movement or sustained water ingress. "
+            "Visible indicators detected: crack, erosion, water_staining. "
+            "The combination of cracking, staining, and surface erosion makes this a clear "
+            "high-priority triage example for human review. "
             "This is a mock/fallback result — connect Azure OpenAI Vision for real image analysis. "
             "AI suggests visible risk indicators only. Humans verify. The system tracks."
         ),
         "ai_confidence": 35,
         "ai_provider": "mock",
         "ai_recommended_action": (
-            "Human reviewer should inspect the evidence and prioritise professional review. "
-            "Do not attempt repair."
+            "Visible indicators suggest this should be reviewed by a qualified person. "
+            "Contributors should record evidence only and should not attempt repair."
         ),
         "case": {
             "status": "Needs Review",
             "routed_to": None,
         },
     },
-    # ── Historic Iron Bridge — corrosion + vegetation_growth, sev 4 → score 44 → Medium, Verified ──
+    # ── Historic Iron Bridge — corrosion + vegetation_growth + water_staining, sev 3 → score 51 → Medium, Verified ──
     {
         "site_name": "Historic Iron Bridge",
         "notes": (
-            "Active corrosion visible on the north railing and on at least two exposed rivets; "
-            "paint surface has flaked exposing bare metal in several patches. "
-            "Vegetation growth observed at the base of both bridge abutments, with roots "
-            "beginning to penetrate mortar joints. No immediate structural failure signs noted, "
-            "but deterioration is clearly progressing since the 2019 inspection record."
+            "Corrosion is visible on the north railing and around several exposed rivets. "
+            "Paint has flaked in small patches, leaving bare metal visible. Water staining is "
+            "visible below part of the deck edge. Vegetation growth is present at the base of "
+            "both bridge abutments and appears close to mortar joints. "
+            "This is useful as a medium-risk demo because the visible indicators are notable "
+            "but not presented as an emergency diagnosis."
         ),
-        "damage_tags": "corrosion,vegetation_growth",
-        "severity": 4,
+        "damage_tags": "corrosion,vegetation_growth,water_staining",
+        "severity": 3,
         "ai_analysis_status": "mock",
         "ai_summary": (
-            "Visible indicators detected: corrosion, vegetation_growth. "
-            "Active corrosion with paint failure combined with vegetation root ingress "
-            "indicates progressive deterioration. Warrants monitoring and professional review. "
+            "Visible indicators detected: corrosion, vegetation_growth, water_staining. "
+            "Corrosion, staining, and vegetation growth are visible enough to justify review "
+            "and tracking, but this mock result does not make a structural judgement. "
             "This is a mock/fallback result — connect Azure OpenAI Vision for real image analysis. "
             "AI suggests visible risk indicators only. Humans verify. The system tracks."
         ),
         "ai_confidence": 35,
         "ai_provider": "mock",
         "ai_recommended_action": (
-            "Verified visible deterioration. Monitor and route to the responsible heritage "
-            "or maintenance authority if appropriate."
+            "Visible indicators suggest this should be monitored and reviewed by the responsible "
+            "heritage or maintenance team if appropriate."
         ),
         "case": {
             "status": "Verified",
             "routed_to": "Bristol City Council — Heritage Structures Team",
         },
     },
-    # ── Memorial Statue — graffiti, sev 2 → score 6 → Low, Routed ──────────────
+    # ── Memorial Statue — graffiti + other, sev 2 → score 10 → Low, Routed ──────────────
     {
         "site_name": "Memorial Statue",
         "notes": (
-            "Graffiti tag visible on the rear face of the stone plinth, approximately 30 cm wide "
-            "and 15 cm tall. Appears to be marker pen, applied recently. "
-            "No structural damage or cracking observed in the immediate area. "
-            "The memorial surface is otherwise intact and weathering normally for its age."
+            "Graffiti is visible on the rear face of the stone plinth, approximately 30 cm wide "
+            "and 15 cm tall. A small area of general surface marking is also visible nearby. "
+            "No cracks, corrosion, water staining, or vegetation growth are recorded in this "
+            "observation. This is a low-risk demo example for basic evidence capture and routing."
         ),
-        "damage_tags": "graffiti",
+        "damage_tags": "graffiti,other",
         "severity": 2,
         "ai_analysis_status": "mock",
         "ai_summary": (
-            "Visible indicators detected: graffiti. "
-            "Surface graffiti with no structural implications noted in this observation. "
+            "Visible indicators detected: graffiti, other. "
+            "The visible issue appears limited to surface marking in this observation, so it is "
+            "a low-risk triage example for human review and routine routing. "
             "This is a mock/fallback result — connect Azure OpenAI Vision for real image analysis. "
             "AI suggests visible risk indicators only. Humans verify. The system tracks."
         ),
         "ai_confidence": 35,
         "ai_provider": "mock",
         "ai_recommended_action": (
-            "Routed for non-urgent review. No public cleaning or physical intervention "
-            "should be attempted by contributors."
+            "Record the evidence for non-urgent review and routing. Contributors should not "
+            "clean, touch, or physically intervene."
         ),
         "case": {
             "status": "Routed",
@@ -191,10 +194,10 @@ def seed(db=None) -> dict:
             obs_age = timedelta(days=10 - i * 2)
             obs = Observation(
                 site_id=site.id,
-                image_filename=None,
                 notes=o_data["notes"],
                 damage_tags=o_data["damage_tags"],
                 severity=o_data["severity"],
+                human_review_status=HumanReviewStatus.APPROVED_FOR_AI,
                 ai_analysis_status=o_data["ai_analysis_status"],
                 ai_summary=o_data["ai_summary"],
                 ai_confidence=o_data["ai_confidence"],

@@ -9,25 +9,58 @@
 
 {% include "_safety_note.html" %}
 
-{% if obs.image_filename %}
-<img class="obs-full" src="/uploads/{{ obs.image_filename }}" alt="Observation photo" />
+{% if obs.human_review_status.value == "Sensitive" %}
+<div class="sensitive-evidence-notice">
+  <strong>Sensitive evidence hidden.</strong>
+  Images, notes, and tags are available only in the reviewer decision view so
+  private or culturally sensitive details do not appear in the general workflow.
+  <a href="/observations/{{ obs.id }}/review">Open reviewer decision</a>
+</div>
+<dl class="meta">
+  <dt>Human review</dt><dd><span class="review-status review-status-sensitive">Sensitive</span></dd>
+  <dt>Date</dt><dd>{{ obs.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</dd>
+</dl>
+{% else %}
+{% set image_count = obs.images | length %}
+{% if image_count == 1 %}
+{% set image = obs.images | first %}
+<img class="obs-full" src="{{ image.image_url }}" alt="Observation photo" />
+{% elif image_count > 1 %}
+<div class="obs-image-grid" aria-label="Observation photos">
+  {% for image in obs.images %}
+  <figure class="obs-image-card">
+    <img class="obs-grid-image"
+         src="{{ image.image_url }}"
+         alt="Observation photo {{ loop.index }}" />
+    <figcaption>Image {{ loop.index }} of {{ image_count }}</figcaption>
+  </figure>
+  {% endfor %}
+</div>
 {% else %}
 <div class="obs-full no-image obs-placeholder">No image uploaded</div>
 {% endif %}
 
 <dl class="meta">
+  <dt>Human review</dt>
+  <dd>
+    <span class="review-status review-status-{{ obs.human_review_status.value | lower }}">
+      {{ obs.human_review_status.value }}
+    </span>
+  </dd>
   <dt>Date</dt><dd>{{ obs.created_at.strftime("%Y-%m-%d %H:%M UTC") }}</dd>
   <dt>Notes</dt><dd>{{ obs.notes or "—" }}</dd>
-  <dt>Damage tags</dt>
+  <dt>Human-reviewed submitted tags</dt>
   <dd>
     {% if obs.tags_list %}
       {% for tag in obs.tags_list %}<span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span> {% endfor %}
     {% else %}—{% endif %}
   </dd>
-  <dt>Severity</dt><dd>{{ obs.severity }} / 5</dd>
+  <dt>Human-reviewed submitted severity</dt><dd>{{ obs.severity }} / 5</dd>
 </dl>
+{% endif %}
 
 <!-- ── AI Analysis panel ──────────────────────────────────────────────────── -->
+{% if obs.human_review_status.value != "Sensitive" %}
 <div class="card ai-panel">
   <div class="ai-panel-header">
     <h2>AI Analysis
@@ -37,16 +70,22 @@
         <span class="ai-badge ai-badge-mock">MOCK / FALLBACK</span>
       {% elif obs.ai_analysis_status == "failed" %}
         <span class="ai-badge ai-badge-failed">FAILED</span>
+      {% elif obs.ai_analysis_status == "rejected" %}
+        <span class="ai-badge ai-badge-failed">REJECTED BY REVIEWER</span>
       {% else %}
         <span class="ai-badge ai-badge-pending">Not run</span>
       {% endif %}
     </h2>
 
+    {% if obs.human_review_status.value == "ApprovedForAI" and not obs.risk_case %}
     <form method="post" action="/observations/{{ obs.id }}/analyze">
       <button class="btn-primary btn-sm" type="submit">
-        {% if obs.ai_analysis_status in ["complete", "mock", "failed"] %}Re-run Analysis{% else %}Run AI Analysis{% endif %}
+        {% if obs.ai_analysis_status in ["complete", "mock", "failed", "rejected"] %}Re-run All-Image Analysis{% else %}Analyze All Images{% endif %}
       </button>
     </form>
+    {% elif obs.human_review_status.value != "ApprovedForAI" %}
+    <a class="btn-secondary btn-sm" href="/observations/{{ obs.id }}/review">Review Submission</a>
+    {% endif %}
   </div>
 
   {# ── Mock / fallback notice ───────────────────────────────────────────────── #}
@@ -63,6 +102,16 @@
     The observation has been saved and can be reviewed manually.
     Human review is required before any conservation action is taken.<br />
     <em>{{ obs.ai_summary or "No further detail available." }}</em>
+  </div>
+  {% endif %}
+
+  {% if obs.ai_analysis_status == "rejected" %}
+  <div class="ai-notice ai-notice-failed">
+    <strong>AI draft rejected by the human reviewer.</strong>
+    Re-run analysis only after checking the images, notes, and reason for rejection.
+    {% if ai_review.reviewer_notes %}
+    <br /><em>Reason: {{ ai_review.reviewer_notes }}</em>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -95,16 +144,22 @@
 
     <dt>Suggested damage tags</dt>
     <dd>
-      {% if obs.tags_list %}
-        {% for tag in obs.tags_list %}<span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span> {% endfor %}
+      {% if ai_tags %}
+        {% for tag in ai_tags %}<span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span> {% endfor %}
       {% else %}Not available{% endif %}
     </dd>
+
+    <dt>Suggested severity</dt>
+    <dd>{{ ai_severity }} / 5</dd>
 
     <dt>AI Summary</dt>
     <dd>{{ obs.ai_summary or "Not available" }}</dd>
 
     <dt>Recommended action</dt>
     <dd>{{ obs.ai_recommended_action or "Not available" }}</dd>
+
+    <dt>Uncertainty</dt>
+    <dd>{{ ai_uncertainty }}</dd>
 
   </dl>
 
@@ -116,22 +171,27 @@
   </details>
   {% endif %}
 
-  {% elif obs.ai_analysis_status != "failed" %}
+  {% elif obs.ai_analysis_status not in ["failed", "rejected"] %}
   <p class="empty">
-    Click <strong>Run AI Analysis</strong> to analyse this observation.<br />
+    {% if obs.human_review_status.value == "ApprovedForAI" %}
+    Click <strong>Analyze All Images</strong> to analyse this observation.<br />
+    {% else %}
+    This submission must be approved in the Review Queue before AI analysis.<br />
+    {% endif %}
     <small>AI suggests visible risk indicators. Humans verify. The system tracks.</small>
   </p>
   {% endif %}
 
 </div>
+{% endif %}
 <!-- ── End AI Analysis panel ─────────────────────────────────────────────── -->
 
 {% if obs.risk_case %}
 <p>Risk case: <a href="/cases/{{ obs.risk_case.id }}">#{{ obs.risk_case.id }}</a>
   — {{ obs.risk_case.status }}</p>
-{% else %}
-<form method="post" action="/observations/{{ obs.id }}/create_case">
-  <button class="btn-primary" type="submit">Create Risk Case</button>
-</form>
+{% elif obs.ai_summary and obs.ai_analysis_status in ["complete", "mock"] %}
+<a class="btn-primary" href="/observations/{{ obs.id }}/ai_review">Review AI Output</a>
+{% elif obs.human_review_status.value == "Pending" %}
+<a class="btn-primary" href="/observations/{{ obs.id }}/review">Review Submission</a>
 {% endif %}
 {% endblock %}

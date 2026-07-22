@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Review Observation #{{ obs.id }} - HeritageRisk AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <p class="breadcrumb">
+      <a href="/observations/review">Review Queue</a> /
+      <a href="/sites/{{ site.id }}">{{ site.name }}</a> /
+      Observation #{{ obs.id }}
+    </p>
+    <h1>Review Observation #{{ obs.id }}</h1>
+  </div>
+  <a class="btn-secondary" href="/observations/{{ obs.id }}">View Observation</a>
+</div>
+
+{% include "_safety_note.html" %}
+
+<div class="review-action-layout">
+  <section class="card">
+    <h2>Submitted Evidence</h2>
+    <dl class="meta">
+      <dt>Site</dt>
+      <dd>{{ site.name }}</dd>
+      <dt>Status</dt>
+      <dd>
+        <span class="review-status review-status-{{ obs.human_review_status.value | lower }}">
+          {{ obs.human_review_status.value }}
+        </span>
+      </dd>
+      <dt>Notes</dt>
+      <dd>{{ obs.notes or "No notes provided." }}</dd>
+      <dt>Submitted tags</dt>
+      <dd>
+        {% if obs.tags_list %}
+          {% for tag in obs.tags_list %}
+          <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+          {% endfor %}
+        {% else %}
+        <span class="muted">None recorded</span>
+        {% endif %}
+      </dd>
+      <dt>Severity</dt>
+      <dd>{{ obs.severity }} / 5</dd>
+    </dl>
+
+    {% if obs.images %}
+    <div class="review-image-grid" aria-label="Submitted observation images">
+      {% for image in obs.images %}
+      <img class="review-image-thumb"
+           src="{{ image.image_url }}"
+           alt="Observation image {{ loop.index }}" />
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+
+  <form class="form-card review-action-form"
+        method="post"
+        action="/observations/{{ obs.id }}/review">
+    <h2>Reviewer Decision</h2>
+
+    <label for="human_review_status">Human review status <span class="required">*</span></label>
+    <select id="human_review_status" name="human_review_status" required>
+      {% for status in review_action_statuses %}
+      <option value="{{ status.value }}"
+              {% if obs.human_review_status == status %}selected{% endif %}>
+        {{ status.value }}
+      </option>
+      {% endfor %}
+    </select>
+
+    <label for="reviewer_notes">Reviewed notes</label>
+    <textarea id="reviewer_notes"
+              name="reviewer_notes"
+              rows="5"
+              placeholder="Redact private details or clarify visible evidence before AI analysis.">{{ obs.notes or '' }}</textarea>
+    <small>Use this to hide private details or remove sensitive content before approval.</small>
+
+    <label for="manually_selected_tags">Reviewed damage tags</label>
+    <input id="manually_selected_tags"
+           name="manually_selected_tags"
+           type="text"
+           value="{{ obs.damage_tags or '' }}"
+           placeholder="crack,water_staining,other" />
+    <small>Use comma-separated taxonomy tags only.</small>
+
+    <label for="severity">Reviewed severity <span class="required">*</span></label>
+    <select id="severity" name="severity" required>
+      {% for score in [1, 2, 3, 4, 5] %}
+      <option value="{{ score }}" {% if obs.severity == score %}selected{% endif %}>
+        {{ score }} / 5
+      </option>
+      {% endfor %}
+    </select>
+
+    <div class="form-actions">
+      <button class="btn-primary"
+              type="submit"
+              name="analyze_after_approval"
+              value="true">Save and Run AI if Approved</button>
+      <button class="btn-secondary" type="submit">Save Decision Only</button>
+      <a class="btn-secondary" href="/observations/review">Cancel</a>
+    </div>
+    <small>
+      When approved, the first action sends every submitted image plus the
+      reviewed site details and notes to the configured analyzer.
+    </small>
+  </form>
+</div>
+{% endblock %}

@@ -6,12 +6,13 @@
 {# ── Page header ──────────────────────────────────────────────────────────── #}
 <div class="page-header">
   <div>
-    <p class="breadcrumb"><a href="/sites">Sites</a> / {{ site.name }}</p>
+    <p class="breadcrumb"><a href="/">Dashboard</a> / <a href="/sites">Sites</a> / {{ site.name }}</p>
     <h1>{{ site.name }}</h1>
   </div>
   <div class="page-header-actions">
-    <a class="btn-primary" href="/sites/{{ site.id }}/observations/new">+ Add Observation</a>
-    <a class="btn-secondary" href="/cases">View Cases</a>
+    <a class="btn-secondary" href="/">Back to Dashboard</a>
+    <a class="btn-primary" href="/sites/{{ site.id }}/observations/new">Upload Observation</a>
+    <a class="btn-secondary" href="/cases">View Risk Cases</a>
   </div>
 </div>
 
@@ -32,18 +33,45 @@
     </div>
     <div>
       <dt>Risk Cases</dt>
-      {% set case_count = site.observations | selectattr("risk_case") | list | length %}
-      <dd>{{ case_count }}</dd>
+      <dd>{{ risk_cases | length }}</dd>
+    </div>
+    <div>
+      <dt>Latest Risk Band</dt>
+      <dd>
+        {% if latest_case %}
+        <span class="band band-{{ latest_case.risk_band | lower }}">{{ latest_case.risk_band }}</span>
+        {% else %}
+        Not available
+        {% endif %}
+      </dd>
+    </div>
+    <div>
+      <dt>Latest Case Status</dt>
+      <dd>
+        {% if latest_case %}
+        <span class="status-badge status-{{ latest_case.status | lower | replace(' ', '-') }}">{{ latest_case.status }}</span>
+        {% else %}
+        No case yet
+        {% endif %}
+      </dd>
     </div>
   </div>
   {% if site.description %}
   <p class="site-description">{{ site.description }}</p>
+  {% else %}
+  <p class="site-description">No description recorded.</p>
   {% endif %}
+</div>
+
+<div class="safety-note" role="note" aria-label="Safety reminder">
+  <strong>Safety reminder.</strong>
+  This page contains visible-risk triage evidence only. It does not replace professional advice or official reporting, and human review is required before action.
 </div>
 
 {# ── Observations ─────────────────────────────────────────────────────────── #}
 <div class="section-header">
   <h2>Observations <span class="badge">{{ site.observations | length }}</span></h2>
+  <a class="btn-primary btn-sm" href="/sites/{{ site.id }}/observations/new">Upload Observation</a>
 </div>
 
 {% if site.observations %}
@@ -51,52 +79,78 @@
   {% for obs in site.observations | sort(attribute="created_at", reverse=True) %}
   <div class="card obs-card">
 
-    {# Thumbnail #}
-    {% if obs.image_filename %}
-    <a href="/observations/{{ obs.id }}">
-      <img class="obs-thumb" src="/uploads/{{ obs.image_filename }}" alt="Observation photo" />
+    {% set image_count = obs.images | length %}
+    {% if obs.human_review_status.value == "Sensitive" %}
+    <div class="obs-thumb obs-placeholder"><span>Sensitive evidence hidden</span></div>
+    {% elif obs.primary_image_url %}
+    <a class="obs-thumb-link" href="/observations/{{ obs.id }}">
+      <img class="obs-thumb" src="{{ obs.primary_image_url }}" alt="Observation photo" />
+      {% if image_count > 1 %}
+      <span class="image-count-badge">+{{ image_count - 1 }} more</span>
+      {% endif %}
     </a>
     {% else %}
     <div class="obs-thumb obs-placeholder"><span>No image</span></div>
     {% endif %}
 
-    {# Content #}
     <div class="obs-body">
       <div class="obs-top">
         <span class="obs-date">{{ obs.created_at.strftime("%d %b %Y, %H:%M") }}</span>
+        {% if obs.primary_image_label and obs.human_review_status.value != "Sensitive" %}
+          <span class="file-pill">{{ obs.primary_image_label }}</span>
+        {% endif %}
         {# AI status badge #}
         {% if obs.ai_analysis_status == "complete" %}
-          <span class="ai-badge ai-badge-complete">AI: Azure</span>
+          <span class="ai-badge ai-badge-complete">AI: {{ obs.ai_provider or "Azure" }}</span>
         {% elif obs.ai_analysis_status == "mock" %}
-          <span class="ai-badge ai-badge-mock">AI: Mock</span>
+          <span class="ai-badge ai-badge-mock">AI: {{ obs.ai_provider or "Mock" }}</span>
         {% elif obs.ai_analysis_status == "failed" %}
           <span class="ai-badge ai-badge-failed">AI: Failed</span>
+        {% elif obs.ai_analysis_status == "rejected" %}
+          <span class="ai-badge ai-badge-failed">AI: Rejected</span>
         {% else %}
           <span class="ai-badge ai-badge-pending">AI: Not run</span>
         {% endif %}
       </div>
 
-      <p class="obs-notes">{{ obs.notes or "No notes recorded." }}</p>
+      {% if obs.human_review_status.value == "Sensitive" %}
+      <p class="obs-notes"><strong>Sensitive evidence hidden from the general site view.</strong></p>
+      {% else %}
+      <p class="obs-notes">{{ (obs.notes or "No notes recorded.")[:180] }}{% if obs.notes and obs.notes|length > 180 %}...{% endif %}</p>
+      {% endif %}
 
       <div class="obs-tags">
+        {% if obs.human_review_status.value == "Sensitive" %}
+        <span class="review-status review-status-sensitive">Sensitive</span>
+        {% else %}
+        {% if obs.tags_list %}
         {% for tag in obs.tags_list %}
         <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
         {% endfor %}
+        {% else %}
+        <span class="tag">No tags</span>
+        {% endif %}
         <span class="severity-pill">Severity {{ obs.severity }}/5</span>
+        {% endif %}
       </div>
 
       <div class="obs-actions">
-        <a class="btn-secondary btn-sm" href="/observations/{{ obs.id }}">View Details</a>
+        <a class="btn-secondary btn-sm" href="/observations/{{ obs.id }}">View Observation</a>
         {% if obs.risk_case %}
-          <a class="btn-secondary btn-sm" href="/cases/{{ obs.risk_case.id }}">
-            Case #{{ obs.risk_case.id }}
-            <span class="band band-{{ obs.risk_case.risk_band | lower }}">{{ obs.risk_case.risk_band }}</span>
-            <span class="status-badge status-{{ obs.risk_case.status | lower | replace(' ', '-') }}">{{ obs.risk_case.status }}</span>
-          </a>
+          <a class="btn-secondary btn-sm" href="/cases/{{ obs.risk_case.id }}">View Risk Case #{{ obs.risk_case.id }}</a>
+          {% if obs.risk_case.report_path %}
+          <a class="btn-secondary btn-sm" href="/cases/{{ obs.risk_case.id }}/report">View Report</a>
+          {% endif %}
         {% else %}
-          <form method="post" action="/observations/{{ obs.id }}/create_case" style="display:inline">
-            <button class="btn-primary btn-sm" type="submit">Create Risk Case</button>
-          </form>
+          {% if obs.human_review_status.value == "Sensitive" %}
+          <a class="btn-primary btn-sm" href="/observations/{{ obs.id }}/review">Review Sensitive Submission</a>
+          {% elif obs.ai_summary and obs.ai_analysis_status in ["complete", "mock"] %}
+          <a class="btn-primary btn-sm" href="/observations/{{ obs.id }}/ai_review">Review AI Output</a>
+          {% elif obs.human_review_status.value == "Pending" %}
+          <a class="btn-primary btn-sm" href="/observations/{{ obs.id }}/review">Review Submission</a>
+          {% else %}
+          <a class="btn-primary btn-sm" href="/observations/{{ obs.id }}">Continue Workflow</a>
+          {% endif %}
         {% endif %}
       </div>
     </div>
@@ -108,7 +162,62 @@
 {% else %}
 <div class="card">
   <p class="empty">No observations yet for this site.</p>
-  <a class="btn-primary mt" href="/sites/{{ site.id }}/observations/new">Add the first observation</a>
+  <a class="btn-primary mt" href="/sites/{{ site.id }}/observations/new">Upload the first observation</a>
+</div>
+{% endif %}
+
+{# ── Site risk cases ─────────────────────────────────────────────────────── #}
+<div class="section-header site-case-header">
+  <h2>Risk Cases <span class="badge">{{ risk_cases | length }}</span></h2>
+</div>
+
+{% if risk_cases %}
+<div class="site-case-list">
+  {% for case in risk_cases %}
+  <div class="card site-case-card">
+    <div class="site-case-main">
+      <div>
+        <a class="site-case-title" href="/cases/{{ case.id }}">Risk Case #{{ case.id }}</a>
+        <span class="location-sub">Observation #{{ case.observation.id }} &middot; {{ case.created_at.strftime("%d %b %Y") }}</span>
+      </div>
+      <div class="site-case-badges">
+        <span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span>
+        <span class="status-badge status-{{ case.status | lower | replace(' ', '-') }}">{{ case.status }}</span>
+      </div>
+    </div>
+    <dl class="site-case-meta">
+      <div>
+        <dt>Risk score</dt>
+        <dd>{{ case.risk_score }}/100</dd>
+      </div>
+      <div>
+        <dt>Routed to</dt>
+        <dd>{{ case.routed_to or "Not routed" }}</dd>
+      </div>
+      <div>
+        <dt>Report</dt>
+        <dd>
+          {% if case.report_path %}
+          <a href="/cases/{{ case.id }}/report">View Report</a>
+          {% else %}
+          Not generated
+          {% endif %}
+        </dd>
+      </div>
+    </dl>
+    <div class="obs-actions">
+      <a class="btn-secondary btn-sm" href="/cases/{{ case.id }}">View Risk Case</a>
+      <a class="btn-secondary btn-sm" href="/observations/{{ case.observation.id }}">View Observation</a>
+      {% if case.report_path %}
+      <a class="btn-secondary btn-sm" href="/cases/{{ case.id }}/report.md">Download .md</a>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card">
+  <p class="empty">No risk cases yet. Create a case from an observation when review evidence is ready.</p>
 </div>
 {% endif %}
 

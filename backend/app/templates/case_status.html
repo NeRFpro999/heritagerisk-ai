@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Update Case #{{ case.id }} - HeritageRisk AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <p class="breadcrumb">
+      <a href="/cases">Cases</a> /
+      <a href="/cases/{{ case.id }}">Case #{{ case.id }}</a> /
+      Update Status
+    </p>
+    <h1>Update Case #{{ case.id }}</h1>
+  </div>
+  <a class="btn-secondary" href="/cases/{{ case.id }}">Back to Case</a>
+</div>
+
+{% include "_safety_note.html" %}
+
+<div class="status-page-layout">
+  <section class="card">
+    <h2>Current Case</h2>
+    <dl class="meta">
+      <dt>Site</dt><dd>{{ site.name }}</dd>
+      <dt>Risk band</dt>
+      <dd><span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span></dd>
+      <dt>Current status</dt>
+      <dd><span class="status-badge status-{{ case.status | lower | replace(' ', '-') }}">{{ case.status }}</span></dd>
+      <dt>Recorded destination</dt><dd>{{ case.routed_to or "Not recorded" }}</dd>
+    </dl>
+  </section>
+
+  <form class="form-card" method="post" action="/cases/{{ case.id }}/status">
+    <h2>Manual Workflow Update</h2>
+    <label for="status">Case status</label>
+    <select id="status" name="status" required>
+      {% for status in case.STATUSES %}
+      <option value="{{ status }}" {% if case.status == status %}selected{% endif %}>
+        {{ status }}
+      </option>
+      {% endfor %}
+    </select>
+
+    <label for="routed_to">Routing destination</label>
+    <input id="routed_to"
+           name="routed_to"
+           type="text"
+           value="{{ case.routed_to or '' }}"
+           placeholder="e.g. Local Council" />
+    <small>A destination is required when setting the case to Routed.</small>
+
+    <div class="form-note">
+      This records your manual decision only. The app does not email, submit,
+      or forward reports to any organisation.
+    </div>
+
+    <div class="form-actions">
+      <button class="btn-primary" type="submit">Save Manual Update</button>
+      <a class="btn-secondary" href="/cases/{{ case.id }}">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

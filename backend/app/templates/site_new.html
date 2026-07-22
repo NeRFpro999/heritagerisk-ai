@@ -2,9 +2,29 @@
 {% block title %}Add Site — HeritageRisk AI{% endblock %}
 
 {% block content %}
-<h1>Add Heritage Site</h1>
+<div class="page-header">
+  <div>
+    <p class="breadcrumb"><a href="/">Dashboard</a> / Reviewer Intake</p>
+    <h1>Reviewer-Led Site Intake</h1>
+  </div>
+  <a class="btn-secondary" href="/observations/submit">Open Public Submission</a>
+</div>
 
-<form class="form-card" method="post" action="/sites">
+<form class="form-card"
+      method="post"
+      action="/sites"
+      enctype="multipart/form-data">
+  <div class="form-note form-note-safety">
+    <strong>Safety first.</strong>
+    Upload only photos taken safely from public or permitted areas. Do not enter unsafe areas, climb, touch, clean, repair, or disturb heritage material.
+  </div>
+  <div class="form-note">
+    This internal path creates an approved observation, analyzes every attached
+    photo with the site context, and opens the AI draft for your final review.
+    Public contributors should use the submission page so their evidence enters
+    the Pending review queue first.
+  </div>
+
   <label for="name">Site name <span class="required">*</span></label>
   <input id="name" name="name" type="text" required placeholder="e.g. Colosseum, Rome" />
 
@@ -15,8 +35,22 @@
   <textarea id="description" name="description" rows="4"
     placeholder="Brief description of the site and its heritage significance"></textarea>
 
+  <label for="images">Photos for AI-assisted intake</label>
+  <input id="images"
+         name="images"
+         type="file"
+         accept=".jpg,.jpeg,.png,.webp"
+         multiple />
+  <small>Upload up to 6 JPG, PNG, or WEBP files, no larger than 10 MB each.</small>
+
+  <label for="intake_notes">Optional visible notes</label>
+  <textarea id="intake_notes"
+            name="intake_notes"
+            rows="4"
+            placeholder="Optional: describe where the photos were taken or anything visible in the images."></textarea>
+
   <div class="form-actions">
-    <button class="btn-primary" type="submit">Save Site</button>
+    <button class="btn-primary" type="submit">Save Site and Analyze Photos</button>
     <a class="btn-secondary" href="/">Cancel</a>
   </div>
 </form>

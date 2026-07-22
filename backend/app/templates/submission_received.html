@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Submission Received - HeritageRisk AI{% endblock %}
+
+{% block content %}
+<section class="submission-confirmation">
+  <span class="submission-confirmation-label">Observation #{{ obs.id }}</span>
+  <h1>Submission received</h1>
+  <p>
+    Your {{ obs.images | length }} image{% if obs.images | length != 1 %}s{% endif %}
+    for <strong>{{ site.name }}</strong> have been saved with a
+    <span class="review-status review-status-pending">Pending</span> status.
+  </p>
+
+  <div class="submission-next-step">
+    <strong>What happens next</strong>
+    <p>
+      A human reviewer checks safety, privacy, relevance, and image quality.
+      AI analysis cannot run unless the reviewer approves this submission.
+    </p>
+  </div>
+
+  <p class="safety-note">
+    HeritageRisk AI is for visible risk triage only. It does not replace
+    professional conservation, engineering, emergency, legal, or cultural
+    heritage advice.
+  </p>
+
+  <div class="form-actions">
+    <a class="btn-primary" href="/observations/submit">Submit Another Observation</a>
+    <a class="btn-secondary" href="/">Return to Dashboard</a>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block title %}AI Review - Observation #{{ obs.id }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <p class="breadcrumb">
+      <a href="/observations/review">Review Queue</a> /
+      <a href="/observations/{{ obs.id }}">Observation #{{ obs.id }}</a> /
+      AI Review
+    </p>
+    <h1>AI Review Result</h1>
+  </div>
+  <a class="btn-secondary" href="/observations/{{ obs.id }}">Back to Observation</a>
+</div>
+
+{% include "_safety_note.html" %}
+
+<div class="ai-review-layout">
+  <section class="card ai-review-card">
+    <h2>Original Evidence</h2>
+
+    {% set image_count = obs.images | length %}
+    {% if image_count == 1 %}
+    {% set image = obs.images | first %}
+    <img class="obs-full" src="{{ image.image_url }}" alt="Observation photo" />
+    {% elif image_count > 1 %}
+    <div class="obs-image-grid" aria-label="Observation photos">
+      {% for image in obs.images %}
+      <figure class="obs-image-card">
+        <img class="obs-grid-image"
+             src="{{ image.image_url }}"
+             alt="Observation photo {{ loop.index }}" />
+        <figcaption>Image {{ loop.index }} of {{ image_count }}</figcaption>
+      </figure>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="obs-full no-image obs-placeholder">No image uploaded</div>
+    {% endif %}
+
+    <dl class="meta">
+      <dt>Site</dt>
+      <dd>{{ site.name }}</dd>
+      <dt>Contributor notes</dt>
+      <dd>{{ obs.notes or "No notes provided." }}</dd>
+      <dt>Originally selected tags</dt>
+      <dd>
+        {% if obs.tags_list %}
+          {% for tag in obs.tags_list %}
+          <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+          {% endfor %}
+        {% else %}
+        <span class="muted">None recorded</span>
+        {% endif %}
+      </dd>
+      <dt>Current severity</dt>
+      <dd><span class="severity-pill">{{ obs.severity }} / 5</span></dd>
+    </dl>
+  </section>
+
+  <section class="card ai-review-card ai-panel">
+    <h2>AI Output</h2>
+    {% if obs.ai_analysis_status == "mock" %}
+    <div class="ai-notice ai-notice-mock">
+      Mock analysis used because Azure AI is disabled or unavailable.
+    </div>
+    {% endif %}
+
+    <dl class="meta">
+      <dt>Summary</dt>
+      <dd>{{ obs.ai_summary }}</dd>
+      <dt>Suggested tags</dt>
+      <dd>
+        {% if ai_tags %}
+          {% for tag in ai_tags %}
+          <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+          {% endfor %}
+        {% else %}
+        <span class="muted">None provided</span>
+        {% endif %}
+      </dd>
+      <dt>Confidence</dt>
+      <dd>
+        {% if obs.ai_confidence is not none %}
+        {{ obs.ai_confidence }} / 100
+        {% else %}
+        Not available
+        {% endif %}
+      </dd>
+      <dt>Suggested severity</dt>
+      <dd><span class="severity-pill">{{ ai_severity }} / 5</span></dd>
+      <dt>Uncertainty</dt>
+      <dd>{{ ai_uncertainty }}</dd>
+      <dt>Recommended next step</dt>
+      <dd>{{ obs.ai_recommended_action or "Human review required before any action." }}</dd>
+    </dl>
+  </section>
+</div>
+
+<form class="form-card finalize-case-form"
+      method="post"
+      action="/observations/{{ obs.id }}/create_risk_case">
+  <h2>Finalize Risk Case</h2>
+
+  <fieldset>
+    <legend>Final visible damage tags</legend>
+    <div class="checkbox-grid">
+      {% for tag in all_tags %}
+      <label class="checkbox-label">
+        <input type="checkbox"
+               name="final_damage_tags"
+               value="{{ tag }}"
+               {% if tag in final_tags %}checked{% endif %} />
+        {{ TAG_LABELS.get(tag, tag.replace("_", " ") | title) }}
+      </label>
+      {% endfor %}
+    </div>
+  </fieldset>
+
+  <label for="final_ai_summary">Final reviewed summary <span class="required">*</span></label>
+  <textarea id="final_ai_summary"
+            name="final_ai_summary"
+            rows="5"
+            required>{{ obs.ai_summary }}</textarea>
+  <small>Edit misleading or unclear wording before it enters the official report.</small>
+
+  <label for="final_recommended_action">Final reviewed next step</label>
+  <textarea id="final_recommended_action"
+            name="final_recommended_action"
+            rows="3">{{ obs.ai_recommended_action or '' }}</textarea>
+
+  <label for="final_severity">Final severity multiplier <span class="required">*</span></label>
+  <select id="final_severity" name="final_severity" required>
+    {% for score in [1, 2, 3, 4, 5] %}
+    <option value="{{ score }}" {% if ai_severity == score %}selected{% endif %}>
+      {{ score }} / 5
+    </option>
+    {% endfor %}
+  </select>
+
+  <label for="routed_to">Routing destination</label>
+  <input id="routed_to"
+         name="routed_to"
+         type="text"
+         placeholder="e.g. Local Council" />
+  <small>This records a possible destination. HeritageRisk AI does not send the report.</small>
+
+  <label for="reviewer_final_notes">Reviewer finalization notes</label>
+  <textarea id="reviewer_final_notes"
+            name="reviewer_final_notes"
+            rows="3"
+            placeholder="Optional note explaining edits or the final decision."></textarea>
+
+  <div class="form-actions">
+    <button class="btn-primary" type="submit">Create Official Risk Case</button>
+    <a class="btn-secondary" href="/observations/{{ obs.id }}">Cancel</a>
+  </div>
+</form>
+
+<form class="form-card reject-ai-form"
+      method="post"
+      action="/observations/{{ obs.id }}/reject_ai_analysis">
+  <h2>Reject AI Draft</h2>
+  <p class="muted">
+    Rejecting the draft prevents Risk Case creation until the analysis is run
+    again and reviewed.
+  </p>
+  <label for="rejection_reason">Reason for rejection</label>
+  <textarea id="rejection_reason"
+            name="rejection_reason"
+            rows="3"
+            placeholder="e.g. The second image was not considered clearly enough."></textarea>
+  <button class="btn-danger" type="submit">Reject AI Draft</button>
+</form>
+{% endblock %}
