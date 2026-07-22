@@ -1,20 +1,154 @@
 {% extends "base.html" %}
-{% block title %}Report — Case #{{ case.id }} — HeritageRisk AI{% endblock %}
+{% block title %}Report - Case #{{ case.id }} - HeritageRisk AI{% endblock %}
 
 {% block content %}
 <div class="page-header">
-  <h1>Evidence Report &mdash; Case #{{ case.id }}</h1>
-  <a class="btn-secondary" href="/cases/{{ case.id }}">Back to Case</a>
-  <a class="btn-secondary" href="/cases/{{ case.id }}/report.md">Download .md</a>
+  <div>
+    <p class="breadcrumb"><a href="/cases/{{ case.id }}">Case #{{ case.id }}</a> / Evidence Report</p>
+    <h1>HeritageRisk AI Evidence Report</h1>
+  </div>
+  <div class="page-header-actions">
+    <a class="btn-secondary" href="/cases/{{ case.id }}">Back to Case</a>
+    <a class="btn-primary" href="/cases/{{ case.id }}/report.md">Download Markdown</a>
+  </div>
 </div>
 
-<p class="safety-note">HeritageRisk AI is for visible risk triage only. It does not replace professional conservation, engineering, emergency, legal, or cultural heritage advice.</p>
+<article class="report-document">
+  <header class="report-document-header">
+    <div>
+      <span class="report-label">Human-reviewed visible-risk evidence</span>
+      <h2>{{ site.name }}</h2>
+      <p>{{ site.location or "Location not provided" }}</p>
+    </div>
+    <div class="report-case-summary">
+      <span>Case #{{ case.id }}</span>
+      <span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span>
+      <span class="status-badge status-{{ case.status | lower | replace(' ', '-') }}">{{ case.status }}</span>
+    </div>
+  </header>
 
-{% if case.observation and case.observation.ai_analysis_status == "mock" %}
-<p class="ai-notice ai-notice-mock">Mock analysis used because Azure AI is disabled or unavailable.</p>
-{% endif %}
+  <section class="report-section">
+    <h2>Site and Observation</h2>
+    <dl class="report-data-grid">
+      <div><dt>Site description</dt><dd>{{ site.description or "Not provided" }}</dd></div>
+      <div><dt>Submitted</dt><dd>{{ obs.created_at.strftime("%d %b %Y, %H:%M UTC") }}</dd></div>
+      <div><dt>Contributor notes</dt><dd>{{ obs.notes or "No notes provided" }}</dd></div>
+      <div><dt>Images</dt><dd>{{ obs.images | length }}</dd></div>
+    </dl>
 
-<div class="report-body">
+    {% if obs.images %}
+    <div class="report-image-grid" aria-label="Submitted evidence images">
+      {% for image in obs.images %}
+      <figure>
+        <img src="{{ image.image_url }}" alt="Submitted evidence image {{ loop.index }}" />
+        <figcaption>Image {{ loop.index }} of {{ obs.images | length }}</figcaption>
+      </figure>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">No images were attached.</p>
+    {% endif %}
+  </section>
+
+  <section class="report-section">
+    <h2>Human Review Audit Trail</h2>
+    <dl class="report-data-grid">
+      <div><dt>Human review status</dt><dd>{{ obs.human_review_status.value }}</dd></div>
+      <div><dt>Reviewed before AI analysis</dt><dd>True</dd></div>
+      <div><dt>Final tags</dt>
+        <dd>
+          {% if obs.tags_list %}
+            {% for tag in obs.tags_list %}
+            <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+            {% endfor %}
+          {% else %}
+          None recorded
+          {% endif %}
+        </dd>
+      </div>
+      <div><dt>Final severity</dt><dd>{{ obs.severity }} / 5</dd></div>
+    </dl>
+  </section>
+
+  <section class="report-section">
+    <h2>Human-Reviewed AI Draft</h2>
+    {% if obs.ai_analysis_status == "mock" %}
+    <div class="ai-notice ai-notice-mock">Mock fallback was used; image pixels were not analysed.</div>
+    {% endif %}
+    <dl class="report-data-grid">
+      <div><dt>Provider</dt><dd>{{ obs.ai_provider or "Not recorded" }}</dd></div>
+      <div><dt>Confidence</dt><dd>{{ obs.ai_confidence if obs.ai_confidence is not none else "Not available" }}{% if obs.ai_confidence is not none %} / 100{% endif %}</dd></div>
+      <div><dt>AI-suggested severity</dt><dd>{{ ai_severity }} / 5</dd></div>
+      <div><dt>AI-suggested tags</dt>
+        <dd>
+          {% if ai_tags %}
+            {% for tag in ai_tags %}
+            <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+            {% endfor %}
+          {% else %}
+          None suggested
+          {% endif %}
+        </dd>
+      </div>
+      <div class="report-data-wide"><dt>Final reviewed summary</dt><dd>{{ obs.ai_summary }}</dd></div>
+      <div class="report-data-wide"><dt>Uncertainty</dt><dd>{{ ai_uncertainty }}</dd></div>
+      <div class="report-data-wide"><dt>Recommended next step</dt><dd>{{ obs.ai_recommended_action or "Human review required before action." }}</dd></div>
+    </dl>
+  </section>
+
+  <section class="report-section">
+    <h2>Explainable Risk Breakdown</h2>
+    <div class="report-score-row">
+      <div class="score-display">
+        <span class="score-number">{{ case.risk_score }}</span>
+        <span class="score-denom">/ 100</span>
+      </div>
+      <span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }} triage band</span>
+    </div>
+    <div class="risk-weight-list report-weight-list">
+      {% for item in risk_breakdown.tag_weights %}
+      <div class="risk-weight-item"><span>{{ item.label }}</span><strong>{{ item.weight }}</strong></div>
+      {% else %}
+      <div class="risk-weight-item"><span>No finalized tags</span><strong>0</strong></div>
+      {% endfor %}
+    </div>
+    <p class="risk-equation">
+      ({{ risk_breakdown.tag_weights | map(attribute="weight") | join(" + ") or "0" }})
+      x Severity {{ risk_breakdown.severity }} = {{ risk_breakdown.raw_score }}
+      {% if risk_breakdown.capped %} -> 100 (capped){% endif %}
+    </p>
+    <p class="muted">Low: 0-29 | Medium: 30-59 | High: 60-100</p>
+  </section>
+
+  <section class="report-section">
+    <h2>Workflow and Routing</h2>
+    <dl class="report-data-grid">
+      <div><dt>Case status</dt><dd>{{ case.status }}</dd></div>
+      <div><dt>Recorded destination</dt><dd>{{ case.routed_to or "Not routed yet" }}</dd></div>
+    </dl>
+    <p class="form-note">
+      The routing destination is a human-entered record. HeritageRisk AI does
+      not email, forward, or submit this report to any organisation.
+    </p>
+  </section>
+
+  <section class="report-section report-limitations">
+    <h2>Safety and Limitations</h2>
+    <ul>
+      <li>The report covers visible evidence in the submitted images and notes only.</li>
+      <li>It cannot establish hidden condition, cause, structural safety, ownership, legal duties, or emergency risk.</li>
+      <li>AI confidence is not proof and every output requires human review.</li>
+    </ul>
+    <blockquote>
+      HeritageRisk AI is for visible risk triage only and does not replace
+      professional structural, conservation, or emergency advice. Do not rely
+      on this report for safety decisions.
+    </blockquote>
+  </section>
+</article>
+
+<details class="markdown-source">
+  <summary>View Markdown source</summary>
   <pre class="markdown-raw">{{ md_content }}</pre>
-</div>
+</details>
 {% endblock %}
