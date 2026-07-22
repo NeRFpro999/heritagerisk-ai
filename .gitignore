@@ -149,6 +149,8 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 env/
@@ -216,3 +218,25 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Private or generated competition research material
+research/manifests/*
+!research/manifests/.gitkeep
+research/annotations/*
+!research/annotations/.gitkeep
+research/raw_predictions/*
+!research/raw_predictions/.gitkeep
+research/generated_datasets/
+research/logs/private/
+research/**/*.db
+research/**/*.sqlite
+research/**/*.sqlite3
+research/**/*.db-*
+
+# Local application data and generated evidence
+data/*.db
+data/*.db-*
+data/uploads/*
+!data/uploads/.gitkeep
+reports/case_*.md
+docs/.pytest_baseline_run.txt
