@@ -1,9 +1,9 @@
 """
 AI image analysis — single entry point for the app.
 
-  AI_ANALYSIS_ENABLED=false (default)  → mock result, no API call
-  AI_ANALYSIS_ENABLED=true, no creds  → mock result with warning prefix
-  AI_ANALYSIS_ENABLED=true, creds set → Azure OpenAI Vision
+  AZURE_OPENAI_ENABLED=false (default)  → mock result, no API call
+  AZURE_OPENAI_ENABLED=true, no creds  → mock result with warning prefix
+  AZURE_OPENAI_ENABLED=true, creds set → Azure OpenAI Vision
 """
 
 from __future__ import annotations
@@ -16,11 +16,13 @@ from app.config import settings
 # Must match the taxonomy in azure_openai_provider.py
 ALLOWED_TAGS: list[str] = [
     "crack",
+    "erosion",
     "graffiti",
+    "corrosion",
     "water_staining",
     "vegetation_growth",
-    "erosion",
-    "corrosion",
+    "surface_loss",
+    "fire_damage",
     "other",
 ]
 
@@ -32,8 +34,11 @@ class AIAnalysisResult:
     confidence: int         # 0–100
     summary: str
     recommended_action: str
-    provider: str           # "mock" | "azure_openai"
+    provider: str           # "mock" | "azure:<deployment>"
     raw_response: str | None = field(default=None)
+    uncertainty: str = field(
+        default="No uncertainty statement was provided. Human verification is required."
+    )
 
 
 def _mock_analyze(image_path: str, notes: str | None) -> AIAnalysisResult:
@@ -64,10 +69,17 @@ def _mock_analyze(image_path: str, notes: str | None) -> AIAnalysisResult:
         "erosion":  "erosion",
         "erode":    "erosion",
         "wear":     "erosion",
+        "surface loss": "surface_loss",
+        "spalling": "surface_loss",
+        "flaking":  "surface_loss",
         "corrosion": "corrosion",
         "rust":     "corrosion",
         "oxidis":   "corrosion",
         "oxidiz":   "corrosion",
+        "fire":     "fire_damage",
+        "burn":     "fire_damage",
+        "scorch":   "fire_damage",
+        "char":     "fire_damage",
     }
     for keyword, tag in keyword_map.items():
         if keyword in notes_lower and tag not in detected_tags:
@@ -93,10 +105,15 @@ def _mock_analyze(image_path: str, notes: str | None) -> AIAnalysisResult:
         summary=summary,
         recommended_action=(
             "HeritageRisk AI is for visible risk triage only. "
-            "It does not replace professional conservation, engineering, emergency, legal, or cultural heritage advice."
+            "It does not replace professional conservation, engineering, "
+            "emergency, legal, or cultural heritage advice."
         ),
         provider="mock",
         raw_response=None,
+        uncertainty=(
+            "High uncertainty. Mock fallback scans contributor notes and does not "
+            "inspect image pixels."
+        ),
     )
 
 
@@ -109,7 +126,7 @@ def analyze_observation_image(
     Never raises — errors are captured inside the provider and returned
     as a result with confidence=0 so the route can always write to the DB.
     """
-    if not settings.ai_analysis_enabled:
+    if not getattr(settings, "azure_openai_enabled", False):
         return _mock_analyze(image_path, notes)
 
     if not settings.azure_credentials_present:
@@ -120,5 +137,40 @@ def analyze_observation_image(
         )
         return result
 
-    from app.services.providers.azure_openai_provider import AzureOpenAIImageAnalyzer
-    return AzureOpenAIImageAnalyzer().analyze(image_path, notes)
+    try:
+        from app.services.providers.azure_openai_provider import (
+            AzureOpenAIImageAnalyzer,
+        )
+
+        return AzureOpenAIImageAnalyzer().analyze(image_path, notes)
+    except Exception:  # noqa: BLE001
+        return _mock_analyze(image_path, notes)
+
+
+def analyze_observation_images(
+    image_paths: list[str],
+    notes: str | None = None,
+) -> AIAnalysisResult:
+    """Analyse one or more observation images behind the same fallback rules."""
+    valid_paths = [path for path in image_paths if path]
+    primary_image_path = valid_paths[0] if valid_paths else ""
+
+    if not getattr(settings, "azure_openai_enabled", False):
+        return _mock_analyze(primary_image_path, notes)
+
+    if not settings.azure_credentials_present:
+        result = _mock_analyze(primary_image_path, notes)
+        result.summary = (
+            "Mock analysis used because Azure AI is disabled or unavailable. "
+            + result.summary
+        )
+        return result
+
+    try:
+        from app.services.providers.azure_openai_provider import (
+            AzureOpenAIImageAnalyzer,
+        )
+
+        return AzureOpenAIImageAnalyzer().analyze_many(valid_paths, notes)
+    except Exception:  # noqa: BLE001
+        return _mock_analyze(primary_image_path, notes)

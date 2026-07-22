@@ -19,53 +19,72 @@ from app.config import settings
 from app.services.ai_analysis import AIAnalysisResult
 
 ALLOWED_TAGS: frozenset[str] = frozenset(
-    ["crack", "graffiti", "water_staining", "vegetation_growth", "erosion", "corrosion", "other"]
+    [
+        "crack",
+        "erosion",
+        "graffiti",
+        "corrosion",
+        "water_staining",
+        "vegetation_growth",
+        "surface_loss",
+        "fire_damage",
+        "other",
+    ]
 )
 
-_SYSTEM_PROMPT = """\
+SAFETY_STATEMENT = (
+    "HeritageRisk AI is for visible risk triage only. It does not replace "
+    "professional conservation, engineering, emergency, legal, or cultural "
+    "heritage advice."
+)
+
+_SYSTEM_PROMPT = f"""\
 You are a heritage-site deterioration assessment assistant.
 
-Analyse the provided image of a heritage site and identify visible signs of
+Analyse the provided image or images of a heritage site and identify visible signs of
 deterioration. Return your analysis as a JSON object only — no prose, no
 markdown fences, just raw JSON.
 
 Rules:
 - Only identify deterioration that is clearly visible in the image.
 - Do not claim certainty when deterioration is ambiguous.
+- Mention uncertainty in the summary when image evidence is unclear,
+  obstructed, distant, or incomplete.
 - Do not recommend physical repairs or invasive actions.
 - Do not tell anyone to enter unsafe or structurally unstable areas.
-- This output is for human review only.
+- {SAFETY_STATEMENT}
+- Human review is required.
 
 Required JSON structure (no extra keys):
-{
+{{
   "damage_tags": [<strings from the allowed list below>],
   "severity": <integer 1–5, where 1 = minor, 5 = severe>,
   "confidence": <integer 0–100>,
   "summary": "<short description of visible risk indicators>",
+  "uncertainty": "<what is unclear, obstructed, distant, or not visible>",
   "recommended_action": "<safe coordination action for human review>"
-}
+}}
 
-Allowed damage_tag values: crack, graffiti, water_staining, vegetation_growth, erosion, corrosion, other
+Allowed damage_tag values: crack, erosion, graffiti, corrosion,
+water_staining, vegetation_growth, surface_loss, fire_damage, other
 
 If no deterioration is visible, return an empty damage_tags list, severity 1,
 and your best confidence estimate.
 """
 
 
-def _parse_error_result(reason: str) -> AIAnalysisResult:
-    """Safe fallback when the API call or JSON parsing fails."""
-    return AIAnalysisResult(
-        damage_tags=["other"],
-        severity=1,
-        confidence=0,
-        summary=(
-            f"Azure OpenAI analysis could not be completed: {reason}. "
-            "The observation has been saved and can be reviewed manually."
-        ),
-        recommended_action="Human review required before any action is taken.",
-        provider="azure_openai",
-        raw_response=None,
-    )
+def _normalise_endpoint(endpoint: str) -> str:
+    endpoint = endpoint.rstrip("/")
+    if endpoint.endswith("/openai/v1"):
+        return f"{endpoint}/"
+    return f"{endpoint}/openai/v1/"
+
+
+def _mock_fallback_result(image_path: str, notes: str | None) -> AIAnalysisResult:
+    """Return the standard mock result without exposing Azure diagnostics."""
+    from app.services.ai_analysis import _mock_analyze
+
+    return _mock_analyze(image_path, notes)
 
 
 def _encode_image(image_path: str) -> tuple[str, str]:
@@ -76,20 +95,27 @@ def _encode_image(image_path: str) -> tuple[str, str]:
 
     mime_type, _ = mimetypes.guess_type(str(path))
     if mime_type not in {"image/jpeg", "image/png", "image/webp", "image/gif"}:
-        raise ValueError(f"Unsupported image format '{mime_type}'. Need JPEG, PNG, WEBP, or GIF.")
+        raise ValueError(
+            f"Unsupported image format '{mime_type}'. Need JPEG, PNG, WEBP, "
+            "or GIF."
+        )
 
     b64 = base64.standard_b64encode(path.read_bytes()).decode("ascii")
     return b64, mime_type
 
 
-def _validate_response(data: dict) -> AIAnalysisResult:
+def _validate_response(data: dict, deployment: str) -> AIAnalysisResult:
     """
     Parse the model's dict into an AIAnalysisResult.
     Any missing or out-of-range field is replaced with a safe default
     so the caller always gets a usable result.
     """
     raw_tags = data.get("damage_tags", [])
-    tags = [t for t in raw_tags if isinstance(t, str) and t in ALLOWED_TAGS] if isinstance(raw_tags, list) else []
+    tags = (
+        [tag for tag in raw_tags if isinstance(tag, str) and tag in ALLOWED_TAGS]
+        if isinstance(raw_tags, list)
+        else []
+    )
     if not tags:
         tags = ["other"]
 
@@ -103,8 +129,17 @@ def _validate_response(data: dict) -> AIAnalysisResult:
     except (TypeError, ValueError):
         confidence = 0
 
-    summary = str(data.get("summary", "")).strip() or "No summary provided by the model."
-    action = str(data.get("recommended_action", "")).strip() or "Human review required before any action is taken."
+    summary = (
+        str(data.get("summary", "")).strip()
+        or "No summary provided by the model."
+    )
+    uncertainty = str(data.get("uncertainty", "")).strip() or (
+        "No uncertainty statement was provided. Human verification is required."
+    )
+    action = (
+        str(data.get("recommended_action", "")).strip()
+        or "Human review required before any action is taken."
+    )
 
     # Store the validated fields as raw JSON — never the original image bytes
     safe_raw = json.dumps({
@@ -112,6 +147,7 @@ def _validate_response(data: dict) -> AIAnalysisResult:
         "severity": severity,
         "confidence": confidence,
         "summary": summary,
+        "uncertainty": uncertainty,
         "recommended_action": action,
     })
 
@@ -121,79 +157,83 @@ def _validate_response(data: dict) -> AIAnalysisResult:
         confidence=confidence,
         summary=summary,
         recommended_action=action,
-        provider="azure_openai",
+        provider=f"azure:{deployment}",
         raw_response=safe_raw,
+        uncertainty=uncertainty,
     )
 
 
 class AzureOpenAIImageAnalyzer:
     def __init__(self) -> None:
-        # Fail fast if credentials are missing — the caller in ai_analysis.py
-        # only instantiates this when azure_credentials_present is True, so
-        # this check exists as a safety net for direct usage.
-        missing = [
-            name for name, val in [
-                ("AZURE_OPENAI_ENDPOINT", settings.azure_openai_endpoint),
-                ("AZURE_OPENAI_API_KEY", settings.azure_openai_api_key),
-                ("AZURE_OPENAI_DEPLOYMENT", settings.azure_openai_deployment),
-            ] if not val
-        ]
-        if missing:
-            raise EnvironmentError(
-                f"Azure OpenAI provider is missing required environment variables: "
-                f"{', '.join(missing)}. Set them in your .env file (see .env.example)."
-            )
+        self.endpoint = settings.azure_openai_endpoint
+        self.api_key = settings.azure_openai_api_key
+        self.deployment = settings.azure_openai_deployment
+        self.timeout_seconds = settings.azure_openai_timeout_seconds
 
     def _validate_response(self, data: dict) -> AIAnalysisResult:
-        return _validate_response(data)
+        return _validate_response(data, self.deployment)
 
     def analyze(self, image_path: str, notes: str | None = None) -> AIAnalysisResult:
+        return self.analyze_many([image_path], notes)
+
+    def analyze_many(
+        self,
+        image_paths: list[str],
+        notes: str | None = None,
+    ) -> AIAnalysisResult:
         """
-        Send image + notes to Azure OpenAI Vision.
+        Send one or more images + notes to Azure OpenAI Vision.
         Returns a validated AIAnalysisResult; never raises.
         """
+        if not self.endpoint or not self.api_key or not self.deployment:
+            primary_image_path = image_paths[0] if image_paths else ""
+            return _mock_fallback_result(primary_image_path, notes)
+
         # Lazy import — the rest of the app works even if openai isn't installed
         try:
-            from openai import AzureOpenAI, APIError, APIConnectionError, AuthenticationError
+            from openai import APIError, APIConnectionError, APIStatusError, OpenAI
         except ImportError:
-            return _parse_error_result("the 'openai' package is not installed (run: pip install openai)")
+            primary_image_path = image_paths[0] if image_paths else ""
+            return _mock_fallback_result(primary_image_path, notes)
 
+        user_content = []
         try:
-            b64, mime_type = _encode_image(image_path)
-        except FileNotFoundError:
-            return _parse_error_result("image file not found on disk")
-        except ValueError as exc:
-            return _parse_error_result(str(exc))
+            for image_path in image_paths:
+                b64, mime_type = _encode_image(image_path)
+                user_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{b64}"},
+                    }
+                )
+        except (FileNotFoundError, ValueError):
+            primary_image_path = image_paths[0] if image_paths else ""
+            return _mock_fallback_result(primary_image_path, notes)
+
+        if not user_content:
+            return _mock_fallback_result("", notes)
 
         notes_text = (notes or "").strip() or "No observer notes provided."
-        user_content = [
-            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}},
-            {"type": "text", "text": f"Observer notes: {notes_text}"},
-        ]
+        user_content.append({"type": "text", "text": f"Observer notes: {notes_text}"})
 
         try:
-            client = AzureOpenAI(
-                azure_endpoint=settings.azure_openai_endpoint,
-                api_key=settings.azure_openai_api_key,
-                api_version=settings.azure_openai_api_version,
+            client = OpenAI(
+                api_key=self.api_key,
+                base_url=_normalise_endpoint(self.endpoint),
+                timeout=self.timeout_seconds,
             )
             response = client.chat.completions.create(
-                model=settings.azure_openai_deployment,
+                model=self.deployment,
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user", "content": user_content},
                 ],
-                max_tokens=600,
-                temperature=0.1,
+                max_completion_tokens=600,
             )
-        except AuthenticationError:
-            return _parse_error_result("authentication failed — check AZURE_OPENAI_API_KEY")
-        except APIConnectionError:
-            return _parse_error_result("could not reach endpoint — check AZURE_OPENAI_ENDPOINT")
-        except APIError as exc:
-            return _parse_error_result(f"API error (status {getattr(exc, 'status_code', 'unknown')})")
-        except Exception as exc:  # noqa: BLE001
-            return _parse_error_result(f"unexpected error ({type(exc).__name__})")
+        except (APIConnectionError, APIStatusError, APIError):
+            return _mock_fallback_result(image_paths[0], notes)
+        except Exception:  # noqa: BLE001
+            return _mock_fallback_result(image_paths[0], notes)
 
         try:
             content = (response.choices[0].message.content or "").strip()
@@ -204,8 +244,8 @@ class AzureOpenAIImageAnalyzer:
                     content = content[4:]
             data = json.loads(content)
         except (IndexError, AttributeError):
-            return _parse_error_result("model returned an empty response")
+            return _mock_fallback_result(image_paths[0], notes)
         except json.JSONDecodeError:
-            return _parse_error_result("model response was not valid JSON")
+            return _mock_fallback_result(image_paths[0], notes)
 
-        return _validate_response(data)
+        return _validate_response(data, self.deployment)

@@ -20,17 +20,25 @@ except ImportError:
     pass  # python-dotenv not installed — fine, rely on environment variables
 
 
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
 class Settings:
     # ── Azure OpenAI (all optional — app works without them) ──────────────────
     azure_openai_endpoint: str = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
     azure_openai_api_key: str = os.environ.get("AZURE_OPENAI_API_KEY", "")
-    azure_openai_deployment: str = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "")
-    azure_openai_api_version: str = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01")
+    azure_openai_deployment: str = os.environ.get("AZURE_OPENAI_PRIMARY_DEPLOYMENT", "")
+    azure_openai_timeout_seconds: float = _float_env("AZURE_OPENAI_TIMEOUT_SECONDS", 30)
 
     # ── Feature flag ──────────────────────────────────────────────────────────
-    # Set AI_ANALYSIS_ENABLED=true in your .env to activate real AI calls.
+    # Set AZURE_OPENAI_ENABLED=true in your .env to activate real AI calls.
     # When false (the default), the app uses a rule-based mock instead.
-    ai_analysis_enabled: bool = os.environ.get("AI_ANALYSIS_ENABLED", "false").lower() == "true"
+    azure_openai_enabled: bool = os.environ.get("AZURE_OPENAI_ENABLED", "false").lower() == "true"
+    ai_analysis_enabled: bool = azure_openai_enabled
 
     @property
     def azure_credentials_present(self) -> bool:
