@@ -4,7 +4,7 @@ FastAPI backend for the HeritageRisk AI MVP.
 
 ## Prerequisites
 
-- Python 3.11 or higher
+- Python 3.12 or higher
 - `pip`
 
 ## Setup
@@ -40,7 +40,7 @@ notes and returns a placeholder result clearly labelled **MOCK**.
 To confirm mock mode is active, check your `.env` (or environment):
 
 ```
-AI_ANALYSIS_ENABLED=false   # or just leave it unset
+AZURE_OPENAI_ENABLED=false   # or just leave it unset
 ```
 
 ### Mode 2: Azure OpenAI Vision (real image analysis)
@@ -60,17 +60,16 @@ cp ../.env.example .env
 Open `.env` and set:
 
 ```
-AI_ANALYSIS_ENABLED=true
-AZURE_OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com/
+AZURE_OPENAI_ENABLED=true
+AZURE_OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com/openai/v1/
 AZURE_OPENAI_API_KEY=your-real-api-key
-AZURE_OPENAI_DEPLOYMENT=your-vision-deployment-name
-AZURE_OPENAI_API_VERSION=2024-02-01
+AZURE_OPENAI_PRIMARY_DEPLOYMENT=your-vision-deployment-name
+AZURE_OPENAI_TIMEOUT_SECONDS=30
 ```
 
-**Important:** `AZURE_OPENAI_DEPLOYMENT` must be a **vision-capable** deployment
-(e.g. `gpt-4o`, `gpt-4-turbo` with vision, or `gpt-4-vision-preview`).
-A text-only deployment will fail and the result will be saved with
-`ai_analysis_status = "failed"` — the app will not crash.
+**Important:** `AZURE_OPENAI_PRIMARY_DEPLOYMENT` must support image input.
+Configuration, connection, or response failures fall back to a clearly labelled
+mock result; the route does not fabricate an Azure success.
 
 **Step 3 — restart the server**
 
@@ -92,14 +91,17 @@ conservation, engineering, cultural heritage, or emergency assessment.
 
 ---
 
-## Demo workflow
+## Primary public demo workflow
 
-1. Open **http://127.0.0.1:8000** → click **+ Add Site**.
-2. Add name / location / description → save.
-3. On the site page → **+ Add Observation** → upload photo, add notes, tick damage types.
-4. On the observation page → **Run AI Analysis** (works in mock mode — no key needed).
-5. Click **Create Risk Case** to generate a risk score and evidence report.
-6. On the case page → update status (Draft → Needs Review → Verified → Routed → Closed).
+1. Open **http://127.0.0.1:8000/observations/submit** and submit one to six images.
+2. Open the review queue and approve, reject, or mark the submission sensitive.
+3. Analyze an approved observation (mock mode works without a key).
+4. Review the AI draft and finalize the tags and severity to create a Risk Case.
+5. Update the case status or record a routing destination manually.
+6. Open the HTML or Markdown evidence report.
+
+Legacy site-observation and case routes remain for compatibility and bypass parts
+of this primary flow. Case statuses are not enforced as a sequential state machine.
 
 ---
 
@@ -107,11 +109,11 @@ conservation, engineering, cultural heritage, or emergency assessment.
 
 ```bash
 cd backend
-pytest tests/ -v
+AZURE_OPENAI_ENABLED=false pytest tests/ -v
 ```
 
-Tests do not call the real Azure OpenAI API. They cover mock mode, missing
-credentials, bad JSON responses, and risk score calculation.
+The explicit override prevents a local `.env` from enabling live Azure calls.
+Azure-dependent test paths use mocked clients.
 
 ---
 
@@ -129,14 +131,9 @@ credentials, bad JSON responses, and risk score calculation.
 
 ## Database note
 
-If you have an existing `data/heritagerisk.db` from before the AI fields were
-added, delete it so the schema is recreated:
-
-```bash
-rm ../data/heritagerisk.db
-```
-
-Uploaded images in `data/uploads/` are unaffected.
+At startup the app creates missing tables and runs a guarded, idempotent SQLite
+migration for the July review-status and multi-image schema. Existing legacy
+single-image records are backfilled into `ObservationImage` rows.
 
 ---
 
@@ -162,8 +159,8 @@ backend/
 └── app/
     ├── main.py                 # FastAPI app + all routes
     ├── config.py               # Env-var settings, .env loading
-    ├── database.py             # SQLAlchemy engine + session
-    ├── models.py               # ORM: Site, Observation, RiskCase
+    ├── database.py             # SQLAlchemy engine, session, startup migration
+    ├── models.py               # ORM: Site, Observation, ObservationImage, RiskCase
     ├── risk.py                 # Rule-based risk scoring
     ├── reports.py              # Markdown report generator
     ├── services/
