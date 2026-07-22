@@ -13,6 +13,7 @@ These tests NEVER call the real Azure OpenAI API. They cover:
 import json
 import sys
 import types
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,12 +24,13 @@ import pytest
 
 def _make_fake_settings(*, enabled: bool, has_creds: bool) -> MagicMock:
     s = MagicMock()
+    s.azure_openai_enabled = enabled
     s.ai_analysis_enabled = enabled
     s.azure_credentials_present = has_creds
     s.azure_openai_endpoint = "https://fake.openai.azure.com/" if has_creds else ""
     s.azure_openai_api_key = "fake-key" if has_creds else ""
-    s.azure_openai_deployment = "fake-deployment" if has_creds else ""
-    s.azure_openai_api_version = "2024-02-01"
+    s.azure_openai_deployment = "gpt-5-mini" if has_creds else ""
+    s.azure_openai_timeout_seconds = 30
     return s
 
 
@@ -38,11 +40,11 @@ def _make_fake_settings(*, enabled: bool, has_creds: bool) -> MagicMock:
 
 class TestMockAnalysis:
     def test_disabled_returns_mock(self):
-        """When AI_ANALYSIS_ENABLED=false, always return a mock result."""
+        """When AZURE_OPENAI_ENABLED=false, always return a mock result."""
         from app.services.ai_analysis import analyze_observation_image, AIAnalysisResult
 
         with patch("app.services.ai_analysis.settings") as mock_settings:
-            mock_settings.ai_analysis_enabled = False
+            mock_settings.azure_openai_enabled = False
             result = analyze_observation_image(image_path="", notes="crack in wall")
 
         assert isinstance(result, AIAnalysisResult)
@@ -79,7 +81,7 @@ class TestMockAnalysis:
         from app.services.ai_analysis import analyze_observation_image
 
         with patch("app.services.ai_analysis.settings") as mock_settings:
-            mock_settings.ai_analysis_enabled = True
+            mock_settings.azure_openai_enabled = True
             mock_settings.azure_credentials_present = False
             result = analyze_observation_image(image_path="", notes="crack")
 
@@ -127,16 +129,20 @@ class TestMockAnalysis:
 # ---------------------------------------------------------------------------
 
 class TestProviderValidation:
-    def test_missing_env_raises_environment_error(self):
-        """Constructor raises EnvironmentError when credentials are absent."""
+    def test_missing_env_uses_mock(self):
+        """Missing Azure provider credentials use the mock fallback."""
         from app.services.providers.azure_openai_provider import AzureOpenAIImageAnalyzer
 
         with patch("app.services.providers.azure_openai_provider.settings") as s:
             s.azure_openai_endpoint = ""
             s.azure_openai_api_key = ""
             s.azure_openai_deployment = ""
-            with pytest.raises(EnvironmentError, match="AZURE_OPENAI_ENDPOINT"):
-                AzureOpenAIImageAnalyzer()
+            s.azure_openai_timeout_seconds = 30
+            analyzer = AzureOpenAIImageAnalyzer()
+
+        result = analyzer.analyze("", notes="crack")
+        assert result.provider == "mock"
+        assert "crack" in result.damage_tags
 
     def test_missing_image_returns_safe_result(self):
         """analyze() returns a safe result (not an exception) for a missing image."""
@@ -145,14 +151,173 @@ class TestProviderValidation:
         with patch("app.services.providers.azure_openai_provider.settings") as s:
             s.azure_openai_endpoint = "https://fake.openai.azure.com/"
             s.azure_openai_api_key = "fake-key"
-            s.azure_openai_deployment = "fake-deployment"
-            s.azure_openai_api_version = "2024-02-01"
+            s.azure_openai_deployment = "gpt-5-mini"
+            s.azure_openai_timeout_seconds = 30
             analyzer = AzureOpenAIImageAnalyzer()
 
         result = analyzer.analyze("/nonexistent/path/image.jpg", notes="crack")
-        assert result.provider == "azure_openai"
-        assert result.confidence == 0
-        assert "not found" in result.summary.lower()
+        assert result.provider == "mock"
+        assert "crack" in result.damage_tags
+
+    @pytest.mark.parametrize(
+        ("endpoint", "api_key", "deployment"),
+        [
+            ("", "fake-key", "gpt-5-mini"),
+            ("https://fake.openai.azure.com/", "", "gpt-5-mini"),
+            ("https://fake.openai.azure.com/", "fake-key", ""),
+        ],
+    )
+    def test_missing_required_azure_setting_uses_mock(self, endpoint, api_key, deployment):
+        """Missing key, endpoint, or deployment each use mock fallback."""
+        from app.services.providers.azure_openai_provider import AzureOpenAIImageAnalyzer
+
+        with patch("app.services.providers.azure_openai_provider.settings") as s:
+            s.azure_openai_endpoint = endpoint
+            s.azure_openai_api_key = api_key
+            s.azure_openai_deployment = deployment
+            s.azure_openai_timeout_seconds = 30
+            analyzer = AzureOpenAIImageAnalyzer()
+
+        result = analyzer.analyze("", notes="water staining")
+        assert result.provider == "mock"
+        assert "water_staining" in result.damage_tags
+
+    def test_endpoint_is_normalised_for_v1(self):
+        from app.services.providers.azure_openai_provider import _normalise_endpoint
+
+        assert (
+            _normalise_endpoint("https://fake.openai.azure.com/")
+            == "https://fake.openai.azure.com/openai/v1/"
+        )
+        assert (
+            _normalise_endpoint("https://fake.openai.azure.com/openai/v1/")
+            == "https://fake.openai.azure.com/openai/v1/"
+        )
+
+    def test_azure_api_exception_uses_mock(self, tmp_path):
+        """Any Azure API/client exception falls back to mock."""
+        from app.services.providers.azure_openai_provider import AzureOpenAIImageAnalyzer
+
+        image_path = tmp_path / "test.png"
+        image_path.write_bytes(b"not-a-real-png-but-mime-is-guessed")
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.side_effect = RuntimeError("non-secret failure")
+
+        with patch("app.services.providers.azure_openai_provider.settings") as s:
+            s.azure_openai_endpoint = "https://fake.openai.azure.com/"
+            s.azure_openai_api_key = "fake-key"
+            s.azure_openai_deployment = "gpt-5-mini"
+            s.azure_openai_timeout_seconds = 30
+            analyzer = AzureOpenAIImageAnalyzer()
+
+        with patch("openai.OpenAI", return_value=fake_client):
+            result = analyzer.analyze(str(image_path), notes="erosion")
+
+        assert result.provider == "mock"
+        assert "erosion" in result.damage_tags
+
+    def test_successful_azure_response_returns_deployment_provider(self, tmp_path):
+        """Mocked successful Azure JSON returns provider azure:gpt-5-mini."""
+        from app.services.providers.azure_openai_provider import AzureOpenAIImageAnalyzer
+
+        image_path = tmp_path / "test.png"
+        image_path.write_bytes(b"not-a-real-png-but-mime-is-guessed")
+
+        fake_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "damage_tags": ["crack"],
+                                "severity": 3,
+                                "confidence": 81,
+                                "summary": "Visible crack along the wall.",
+                                "uncertainty": "The crack depth cannot be determined.",
+                                "recommended_action": "Human review required before action.",
+                            }
+                        )
+                    )
+                )
+            ]
+        )
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = fake_response
+
+        with patch("app.services.providers.azure_openai_provider.settings") as s:
+            s.azure_openai_endpoint = "https://fake.openai.azure.com/"
+            s.azure_openai_api_key = "fake-key"
+            s.azure_openai_deployment = "gpt-5-mini"
+            s.azure_openai_timeout_seconds = 30
+            analyzer = AzureOpenAIImageAnalyzer()
+
+        with patch("openai.OpenAI", return_value=fake_client) as openai_cls:
+            result = analyzer.analyze(str(image_path), notes="crack")
+
+        assert result.provider == "azure:gpt-5-mini"
+        assert result.damage_tags == ["crack"]
+        assert result.confidence == 81
+        assert result.uncertainty == "The crack depth cannot be determined."
+        openai_cls.assert_called_once_with(
+            api_key="fake-key",
+            base_url="https://fake.openai.azure.com/openai/v1/",
+            timeout=30,
+        )
+        fake_client.chat.completions.create.assert_called_once()
+        call_kwargs = fake_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["model"] == "gpt-5-mini"
+        assert call_kwargs["max_completion_tokens"] == 600
+
+    def test_multiple_images_are_sent_in_one_analysis_request(self, tmp_path):
+        from app.services.providers.azure_openai_provider import AzureOpenAIImageAnalyzer
+
+        first_path = tmp_path / "first.png"
+        second_path = tmp_path / "second.jpg"
+        first_path.write_bytes(b"first-image")
+        second_path.write_bytes(b"second-image")
+        fake_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "damage_tags": ["erosion"],
+                                "severity": 2,
+                                "confidence": 65,
+                                "summary": "Possible erosion is visible.",
+                                "uncertainty": "Lighting differs between images.",
+                                "recommended_action": "Human review required.",
+                            }
+                        )
+                    )
+                )
+            ]
+        )
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = fake_response
+
+        with patch("app.services.providers.azure_openai_provider.settings") as settings:
+            settings.azure_openai_endpoint = "https://fake.openai.azure.com/"
+            settings.azure_openai_api_key = "fake-key"
+            settings.azure_openai_deployment = "gpt-5-mini"
+            settings.azure_openai_timeout_seconds = 30
+            analyzer = AzureOpenAIImageAnalyzer()
+
+        with patch("openai.OpenAI", return_value=fake_client):
+            result = analyzer.analyze_many(
+                [str(first_path), str(second_path)],
+                notes="Site name: Test Memorial",
+            )
+
+        assert result.provider == "azure:gpt-5-mini"
+        call_kwargs = fake_client.chat.completions.create.call_args.kwargs
+        user_content = call_kwargs["messages"][1]["content"]
+        assert len([item for item in user_content if item["type"] == "image_url"]) == 2
+        assert user_content[-1] == {
+            "type": "text",
+            "text": "Observer notes: Site name: Test Memorial",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -165,8 +330,8 @@ class TestResponseValidation:
         with patch("app.services.providers.azure_openai_provider.settings") as s:
             s.azure_openai_endpoint = "https://fake.openai.azure.com/"
             s.azure_openai_api_key = "fake-key"
-            s.azure_openai_deployment = "fake-deployment"
-            s.azure_openai_api_version = "2024-02-01"
+            s.azure_openai_deployment = "gpt-5-mini"
+            s.azure_openai_timeout_seconds = 30
             return AzureOpenAIImageAnalyzer()
 
     def test_valid_response_parsed_correctly(self):
@@ -176,13 +341,15 @@ class TestResponseValidation:
             "severity": 3,
             "confidence": 72,
             "summary": "Visible crack along the east wall.",
+            "uncertainty": "The image does not show the crack depth.",
             "recommended_action": "Schedule inspection within 30 days.",
         }
         result = analyzer._validate_response(data)
         assert result.damage_tags == ["crack", "erosion"]
         assert result.severity == 3
         assert result.confidence == 72
-        assert result.provider == "azure_openai"
+        assert result.uncertainty == "The image does not show the crack depth."
+        assert result.provider == "azure:gpt-5-mini"
         assert result.raw_response is not None
         # raw_response must not contain base64 image data — just the small JSON fields
         assert len(result.raw_response) < 2000
@@ -234,33 +401,68 @@ class TestResponseValidation:
         })
         assert result.confidence == 100
 
-    def test_bad_json_string_returns_safe_result(self):
+    def test_bad_json_string_returns_mock_result(self, tmp_path):
         """Simulate the model returning prose instead of JSON."""
-        from app.services.providers.azure_openai_provider import _parse_error_result
-        result = _parse_error_result("Model response was not valid JSON.")
-        assert result.provider == "azure_openai"
-        assert result.confidence == 0
-        assert result.damage_tags == ["other"]
-        assert result.recommended_action == "Human review required before any action is taken."
+        from app.services.providers.azure_openai_provider import AzureOpenAIImageAnalyzer
+
+        image_path = tmp_path / "test.png"
+        image_path.write_bytes(b"not-a-real-png-but-mime-is-guessed")
+
+        fake_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="This is not JSON.")
+                )
+            ]
+        )
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.return_value = fake_response
+
+        with patch("app.services.providers.azure_openai_provider.settings") as s:
+            s.azure_openai_endpoint = "https://fake.openai.azure.com/"
+            s.azure_openai_api_key = "fake-key"
+            s.azure_openai_deployment = "gpt-5-mini"
+            s.azure_openai_timeout_seconds = 30
+            analyzer = AzureOpenAIImageAnalyzer()
+
+        with patch("openai.OpenAI", return_value=fake_client):
+            result = analyzer.analyze(str(image_path), notes="crack")
+
+        assert result.provider == "mock"
+        assert "crack" in result.damage_tags
 
 
 # ---------------------------------------------------------------------------
-# Tests: tag merging
+# Tests: submitted evidence and AI suggestions remain separate
 # ---------------------------------------------------------------------------
 
-class TestTagMerging:
-    def test_ai_tags_merged_with_manual_tags(self):
-        """New AI tags should be unioned with existing manual tags, no duplicates."""
-        existing = {"crack", "graffiti"}
-        ai_tags = ["crack", "erosion"]
-        merged = sorted(existing | set(ai_tags))
-        assert merged == ["crack", "erosion", "graffiti"]
+class TestEvidenceSeparation:
+    def test_ai_result_does_not_overwrite_human_tags_or_severity(self):
+        from app.main import apply_ai_analysis_result
+        from app.models import Observation
+        from app.services.ai_analysis import AIAnalysisResult
 
-    def test_duplicate_tags_not_added(self):
-        existing = {"crack"}
-        ai_tags = ["crack", "crack"]
-        merged = sorted(existing | set(ai_tags))
-        assert merged.count("crack") == 1
+        observation = Observation(
+            site_id=1,
+            damage_tags="crack,graffiti",
+            severity=2,
+        )
+        result = AIAnalysisResult(
+            damage_tags=["erosion"],
+            severity=5,
+            confidence=74,
+            summary="Possible erosion is visible.",
+            recommended_action="Human review required.",
+            provider="azure:gpt-5-mini",
+        )
+
+        apply_ai_analysis_result(observation, result)
+
+        assert observation.damage_tags == "crack,graffiti"
+        assert observation.severity == 2
+        raw_data = json.loads(observation.ai_raw_response)
+        assert raw_data["damage_tags"] == ["erosion"]
+        assert raw_data["severity"] == 5
 
 
 # ---------------------------------------------------------------------------
