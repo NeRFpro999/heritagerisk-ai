@@ -17,6 +17,8 @@ responsibilities have been approved.
 - `analysis/`: reproducible analysis code and safe, aggregate result tables.
 - `figures/`: publication-ready figures containing no identifying source data.
 - `logs/`: redacted experiment logs. The `logs/private/` path is ignored.
+- `corpus/`: metadata-only corpus schema, manifest/audit outputs, and selection
+  tooling documentation. Raw photo folders under this path are ignored.
 
 Generated datasets and research database files are also ignored. Existing
 global ignore rules cover `.env` credential files. Do not weaken those rules.

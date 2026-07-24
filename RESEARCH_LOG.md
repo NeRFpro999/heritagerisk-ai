@@ -8,6 +8,203 @@ Older entries record the state and decisions at their dates. Later entries and
 
 ---
 
+## Entry #22 — 2026-07-23
+
+### Paired Experiment Statistical Analysis Functions
+
+Added `research/analysis/` for pure metric calculations over paired experiment
+exports and human reference labels. The package loads Task 7 AI export CSVs and
+a documented human-reference CSV with `asset_id`, `indicator_type`, `present`,
+and `reviewer_id`. It computes micro/macro precision, recall, F1, unsupported
+claims, insufficient-evidence rate, paired per-asset recall/F1 deltas, Wilcoxon
+signed-rank tests, effect size, seeded bootstrap confidence intervals,
+confidence calibration, Cohen's kappa, and repeatability.
+
+`scripts/analyze_experiment.py` writes `results.md`, `confusion_matrix.csv`,
+`paired_deltas.csv`, and `confidence_reliability.csv`. The report states that
+`n` is the number of physical assets and that photos of one asset are not
+independent samples. Tests use a four-asset hand-computed toy fixture; no
+real-corpus performance results or conclusions are committed.
+
+---
+
+## Entry #21 — 2026-07-23
+
+### Corpus Manifest Audit and Asset Selection Tooling
+
+Added `research/corpus/` as a metadata-only corpus audit area. It now defines
+the per-photo manifest schema for anonymous photo ids, SHA-256 hashes, relative
+paths, dimensions, capture role, asset group, redacted site label, privacy
+status, cultural-sensitivity status, and provenance notes. Raw photographs
+remain outside Git; common local raw-photo folders under `research/corpus/` are
+ignored.
+
+`scripts/audit_corpus.py` builds the manifest and audit report from a private
+photo directory, detects duplicate hashes and files missing from a previous
+manifest, preserves prior clearance decisions, and summarizes role/group
+counts. `scripts/select_assets.py` selects only complete cleared
+WIDE/MEDIUM/CLOSE groups and emits the experiment manifest consumed by
+`scripts/run_experiment.py`, with a seeded pilot/held-out split. Synthetic tests
+cover the behavior; no real corpus or 1,120-photo audit output is committed.
+
+---
+
+## Entry #20 — 2026-07-23
+
+### Paired Single-Medium vs Three-View Experiment Sessions
+
+Added a research-only data path for paired image-context experiments. One
+`ExperimentAsset` represents a physical asset, and each `AssessmentSession`
+stores one `single_medium` or `three_view` run with condition image ids,
+structured analysis payload, schema/model/settings metadata, prompt SHA-256,
+seeded run order, run timestamp, and operator.
+
+The experiment runner keeps these sessions outside the public/community
+workflow: they are not Observations, do not enter the review queue, and do not
+create Risk Cases. The single-medium condition uses the same medium role image
+id as the three-view condition, and resumable runs avoid duplicate
+asset/condition sessions. Export now produces session-level rows and
+per-indicator rows for later analysis. Mock-mode behavior is tested; live Azure
+experiment results remain unverified until privacy-cleared assets and
+credentials are used.
+
+---
+
+## Entry #19 — 2026-07-23
+
+### AI Schema v2 Indicator Findings
+
+Added a strict Pydantic `schema_version = "2"` AI response contract with
+per-indicator findings, evidence locations, ObservationImage id references,
+per-indicator confidence, supporting visible evidence, severity contribution,
+and explicit evidence sufficiency. `insufficient` with zero indicators is a
+valid outcome and can be finalized as no visible indicators confirmed.
+
+Azure prompts now request the v2 JSON directly and state that the model must not
+diagnose causes, hidden damage, structural safety, or safe/unsafe access. Invalid
+indicator types, out-of-range values, malformed payloads, and image references
+outside the Observation fail the whole result and preserve a sanitized raw
+payload for audit. The app continues to render existing v1 aggregate rows.
+
+---
+
+## Entry #18 — 2026-07-23
+
+### Manifest Demo Seeding and Live Azure Verification
+
+Added `scripts/seed_demo.py` to rebuild a local demo SQLite database from
+privacy-cleared files in ignored `demo_assets/`. The seed runs through the real
+FastAPI routes with `TestClient`, so upload validation, CSRF, reviewer login,
+review decisions, mock or Azure analysis, AI finalization, immutable snapshots,
+reports, and status-transition events are exercised instead of raw inserts.
+
+Added `scripts/verify_azure.py` for an opt-in live Azure check. It refuses to run
+unless the required Azure environment variables are present and
+`AZURE_OPENAI_ENABLED=true`. It sends one observation through the application
+workflow, prints latency, deployment id, persisted structured result, and
+validation status, and exits nonzero with the preserved app state if Azure falls
+back to mock or validation fails. Automated tests cover mock seeding and the
+missing-environment refusal path; they do not call live Azure.
+
+The preserved app state differs by failure class: schema-validation failures
+retain the sanitized raw payload, while transport/configuration fallbacks retain
+only labelled mock output and do not retain the failed Azure attempt or
+diagnostic.
+
+---
+
+## Entry #17 — 2026-07-22
+
+### Minimal Reviewer Access, CSRF, and Recorded Identity
+
+Reviewer actions now require one credential supplied through
+`REVIEWER_USERNAME` and a salted scrypt `REVIEWER_PASSWORD_HASH`. Successful
+login creates an eight-hour Starlette signed session; logout clears it. A stable
+`SESSION_SECRET_KEY` keeps sessions valid across restarts, while an omitted key
+deliberately falls back to a process-ephemeral secret. Reviewer-led intake, the
+review queue and decisions, analysis, AI-output review/finalization, case-status
+updates, and browser seeding are guarded. Public multi-image submission remains
+logged out by design and is still forced to `Pending`.
+
+Every state-changing form POST, including login and public submission, now uses
+a double-submit CSRF token. The submission reviewer is stored in
+`Observation.reviewed_by`; the finalizer is stored in
+`RiskCase.finalized_by`. Both identities are copied into the immutable case
+snapshot and rendered by the case page and both report formats. The additive
+SQLite migration leaves identity fields `NULL` for historical records rather
+than inventing a reviewer.
+
+The legacy `/sites/{site_id}/observations/new` and
+`/sites/{site_id}/observations` routes and their single-image template were
+removed. The compatibility `/observations/{id}/create_case` POST remains, but it
+is authenticated, CSRF-protected, and writes the same finalizer identity and
+snapshot as the primary route.
+
+This is a competition-scale access boundary, not production identity
+management. One shared credential cannot distinguish multiple people; there is
+no role model, login throttling, password recovery, per-status updater identity,
+or append-only action log. Local HTTP does not set the session cookie's `Secure`
+flag. Uploaded media and read-only case/report routes remain public, and report
+GET routes still regenerate files and update `report_path`.
+
+---
+
+## Entry #16 — 2026-07-22
+
+### Content-Validated, Metadata-Free Image Storage
+
+Both remaining image-intake paths use one shared upload helper. It keeps the
+existing 10 MiB per-file limit and UUID filenames, but no longer trusts the
+filename alone: `.jpg`/`.jpeg`, `.png`, and `.webp` uploads must have matching
+JPEG, PNG, or RIFF/WEBP leading signatures and must decode successfully with
+Pillow.
+
+Before storage, the helper applies `ImageOps.exif_transpose` and rebuilds a fresh
+pixel-only image for re-encoding in the validated format. This preserves the
+intended visual orientation while omitting EXIF, GPS, XMP, embedded thumbnails,
+and other source metadata. Any Azure request therefore uses the sanitized stored
+file rather than the contributor's original bytes. Regression tests cover
+suffix/signature mismatches, text masquerading as an image, synthetic GPS EXIF,
+orientation preservation, and oversized files.
+
+This is an upload-integrity and metadata-minimization control, not a complete
+media-security or privacy boundary. Stored files remain available through the
+public `/uploads` mount, and the app still has no malware scanner, aggregate
+request limit, rate limit, consent workflow, retention policy, or verified live
+Azure data-governance evidence.
+
+---
+
+## Entry #15 — 2026-07-22
+
+### Three-Layer Evidence Provenance
+
+Separated the evidence lifecycle into contributor original, AI proposal, and
+reviewer-accepted final records. Every new Observation now writes
+`contributor_original` once with notes, tags, severity, and submission time.
+Reviewer edits continue to update the working Observation fields but cannot
+change that original. Human accept/reject metadata moved into
+`ai_review_decision`, so review actions no longer rewrite the AI raw response or
+structured proposal fields.
+
+Every new Risk Case now stores `final_snapshot`, including final tags/severity,
+the per-tag weights used, multiplier, raw equation, cap result, score, band,
+final reviewed wording, contributor original, AI proposal, and evidence image
+references, plus site details used by case/report views. The case page and
+Markdown/HTML reports use this snapshot rather than recalculating from the live
+Observation. Later Observation edits therefore cannot make the displayed
+breakdown disagree with the stored case score. Contributor-original note text
+is limited to reviewer comparison pages so a privacy redaction is not reversed
+by a case view or exported report.
+
+The additive startup migration creates the three nullable JSON columns when
+needed. Pre-provenance rows remain explicitly unavailable where their original
+or final values cannot be reconstructed truthfully. The implementation is
+covered by full-cycle, byte-identical AI proposal, post-case mutation, report,
+and idempotent migration regressions.
+
+---
+
 ## Entry #14 — 2026-07-22
 
 ### Audited Workflow Claims and SQLite Startup Migration

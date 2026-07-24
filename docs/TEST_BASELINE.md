@@ -4,6 +4,40 @@
 > workflow. Current verified behavior and test evidence are recorded in
 > [`competition_baseline.md`](../competition_baseline.md).
 
+## Current Verification — 2026-07-23
+
+The current offline suite result is:
+
+```text
+220 passed, 538 warnings in 203.33s (0:03:23)
+```
+
+Command:
+
+```bash
+cd backend
+AZURE_OPENAI_ENABLED=false pytest -q
+```
+
+Current regressions cover signed reviewer login/logout, redirects from reviewer
+routes while logged out, refusal of the analysis endpoint without a session,
+double-submit CSRF rejection, logged-out public submission remaining `Pending`,
+reviewer/finalizer identity persistence and rendering, removal of the legacy
+site-observation route, upload signature/metadata handling, provenance, and
+immutable reports, plus case-status transition enforcement and event history.
+They also cover manifest demo seeding in mock mode and Azure-verifier refusal
+when required environment variables are missing, plus schema v2 AI indicator
+validation, failed validation preservation, insufficient-evidence finalization,
+and v1 compatibility rendering. Azure-dependent paths use mocks; no live Azure
+call is part of this result.
+
+The access tests do not establish production security. One shared credential,
+login throttling/recovery, HTTPS and `Secure` cookies, public upload/report
+access, historical `NULL` identities, and the absence of complete per-action
+event history remain qualified in `competition_baseline.md`.
+
+## Historical 2026-06-19 Baseline
+
 ## Run details
 
 | Field | Value |
@@ -78,8 +112,9 @@ Priority order based on the current gap analysis:
 3. **Multi-image session tests (when `AssessmentSession` is added)**
    A new `test_session_smoke.py` mirroring the existing smoke test structure: create session → upload N images → session-level analyze → human review step → create case → report. Keep `test_mvp_smoke.py` unchanged as the single-image regression guard.
 
-4. **Human review step test**
-   When the review queue UI is added, test that a case cannot move from `Draft` directly to `Routed` without passing through `Verified` first.
+4. **Expanded status-transition UI screenshots**
+   Automated tests now reject `Draft` directly to `Routed`; a manual screenshot
+   pass should capture the valid-next-state form and event history display.
 
 5. **`datetime.utcnow()` fix coverage**
    After the `utcnow()` calls are replaced with `datetime.now(timezone.utc)`, confirm the 38-warning count drops. No new tests needed — the deprecation warnings disappearing from the run is the signal.
