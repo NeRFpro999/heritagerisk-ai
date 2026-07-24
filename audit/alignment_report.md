@@ -1,7 +1,7 @@
 # HeritageRisk AI Description Alignment Audit
 
-Audit date: 2026-07-24 (Australia/Melbourne)  
-Audited state: pre-commit working tree based on commit `9c85291`  
+Audit date: 2026-07-24 (Australia/Melbourne)
+Audited state: pre-commit working tree based on commit `9c85291`
 Audit mode: independent, read-only verification; no live Azure request
 
 This report preserves the descriptions and repository state as they existed

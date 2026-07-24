@@ -81,4 +81,3 @@ def render_results_markdown(outputs: AnalysisOutputs) -> str:
         ]
     )
     return "\n".join(lines)
-
