@@ -81,3 +81,27 @@ def calculate_risk_breakdown(tags: list[str], severity: int) -> dict:
             "High": "60-100",
         },
     }
+
+
+def build_risk_snapshot(tags: list[str], severity: int) -> dict:
+    """Capture the exact scoring inputs and arithmetic used for a RiskCase."""
+    breakdown = calculate_risk_breakdown(tags, severity)
+    weights = " + ".join(
+        str(item["weight"]) for item in breakdown["tag_weights"]
+    ) or "0"
+    return {
+        "final_tags": list(tags),
+        "final_severity": breakdown["severity"],
+        "tag_weights": breakdown["tag_weights"],
+        "multiplier": breakdown["severity"],
+        "tag_sum": breakdown["tag_sum"],
+        "raw_score": breakdown["raw_score"],
+        "raw_equation": (
+            f"({weights}) × Severity {breakdown['severity']} = "
+            f"{breakdown['raw_score']}"
+        ),
+        "capped": breakdown["capped"],
+        "capped_score": breakdown["score"],
+        "band": breakdown["band"],
+        "thresholds": breakdown["thresholds"],
+    }

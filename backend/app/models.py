@@ -2,9 +2,10 @@ from datetime import datetime
 from enum import Enum as PythonEnum
 
 from sqlalchemy import Enum as SqlEnum
-from sqlalchemy import Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import JSON, Integer, String, Text, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.case_status import CASE_STATUSES
 from app.database import Base
 
 
@@ -13,6 +14,11 @@ class HumanReviewStatus(str, PythonEnum):
     APPROVED_FOR_AI = "ApprovedForAI"
     REJECTED = "Rejected"
     SENSITIVE = "Sensitive"
+
+
+class AssessmentCondition(str, PythonEnum):
+    SINGLE_MEDIUM = "single_medium"
+    THREE_VIEW = "three_view"
 
 
 class Site(Base):
@@ -26,6 +32,9 @@ class Site(Base):
 
     observations: Mapped[list["Observation"]] = relationship(
         "Observation", back_populates="site", cascade="all, delete-orphan"
+    )
+    experiment_assets: Mapped[list["ExperimentAsset"]] = relationship(
+        "ExperimentAsset", back_populates="site"
     )
 
 
@@ -50,9 +59,14 @@ class Observation(Base):
         nullable=False,
         default=HumanReviewStatus.PENDING,
     )
+    reviewed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    contributor_original: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True),
+        nullable=True,
+    )
 
-    # Possible values: "not_run", "running", "complete", "mock", "failed", "rejected"
+    # Possible values: "not_run", "running", "complete", "mock", "failed"
     ai_analysis_status: Mapped[str] = mapped_column(String(20), nullable=True, default="not_run")
     ai_summary: Mapped[str] = mapped_column(Text, nullable=True)
     ai_confidence: Mapped[int] = mapped_column(Integer, nullable=True)
@@ -60,6 +74,11 @@ class Observation(Base):
     ai_recommended_action: Mapped[str] = mapped_column(Text, nullable=True)
     # Raw JSON string from the provider (useful for debugging)
     ai_raw_response: Mapped[str] = mapped_column(Text, nullable=True)
+    # Human decisions are separate so reviewing cannot rewrite the AI proposal.
+    ai_review_decision: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True),
+        nullable=True,
+    )
 
     site: Mapped["Site"] = relationship("Site", back_populates="observations")
     images: Mapped[list["ObservationImage"]] = relationship(
@@ -129,11 +148,97 @@ class RiskCase(Base):
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="Draft")
     routed_to: Mapped[str] = mapped_column(String(200), nullable=True)
     report_path: Mapped[str] = mapped_column(String(300), nullable=True)
+    final_snapshot: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True),
+        nullable=True,
+    )
+    finalized_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
 
     observation: Mapped["Observation"] = relationship("Observation", back_populates="risk_case")
+    events: Mapped[list["CaseEvent"]] = relationship(
+        "CaseEvent",
+        back_populates="case",
+        cascade="all, delete-orphan",
+        order_by="CaseEvent.created_at",
+    )
 
-    STATUSES = ["Draft", "Needs Review", "Verified", "Routed", "Closed"]
+    STATUSES = CASE_STATUSES
+
+
+class CaseEvent(Base):
+    __tablename__ = "case_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    case_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("risk_cases.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    from_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    reviewer: Mapped[str] = mapped_column(String(200), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    case: Mapped["RiskCase"] = relationship("RiskCase", back_populates="events")
+
+
+class ExperimentAsset(Base):
+    __tablename__ = "experiment_assets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    external_asset_id: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    site_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("sites.id"), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    site: Mapped["Site | None"] = relationship("Site", back_populates="experiment_assets")
+    sessions: Mapped[list["AssessmentSession"]] = relationship(
+        "AssessmentSession",
+        back_populates="asset",
+        cascade="all, delete-orphan",
+        order_by="AssessmentSession.run_order",
+    )
+
+
+class AssessmentSession(Base):
+    __tablename__ = "assessment_sessions"
+    __table_args__ = (
+        UniqueConstraint("asset_id", "condition", name="uq_assessment_asset_condition"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    asset_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("experiment_assets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    condition: Mapped[AssessmentCondition] = mapped_column(
+        SqlEnum(
+            AssessmentCondition,
+            values_callable=lambda enum: [condition.value for condition in enum],
+            name="assessment_condition",
+            native_enum=False,
+            validate_strings=True,
+        ),
+        nullable=False,
+    )
+    image_ids: Mapped[list[int]] = mapped_column(JSON(none_as_null=True), nullable=False)
+    analysis_result_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    analysis_result: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    prompt_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    model_deployment: Mapped[str] = mapped_column(String(200), nullable=False)
+    settings: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    run_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    run_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    operator: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    asset: Mapped["ExperimentAsset"] = relationship(
+        "ExperimentAsset", back_populates="sessions"
+    )
