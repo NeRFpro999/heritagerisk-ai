@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_csrf.html" import csrf_input %}
 {% block title %}Update Case #{{ case.id }} - HeritageRisk AI{% endblock %}
 
 {% block content %}
@@ -20,9 +21,9 @@
   <section class="card">
     <h2>Current Case</h2>
     <dl class="meta">
-      <dt>Site</dt><dd>{{ site.name }}</dd>
+      <dt>Site</dt><dd>{{ site.get("name") or "Not available" }}</dd>
       <dt>Risk band</dt>
-      <dd><span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span></dd>
+      <dd><span class="band band-{{ snapshot.band | lower }}">{{ snapshot.band }}</span></dd>
       <dt>Current status</dt>
       <dd><span class="status-badge status-{{ case.status | lower | replace(' ', '-') }}">{{ case.status }}</span></dd>
       <dt>Recorded destination</dt><dd>{{ case.routed_to or "Not recorded" }}</dd>
@@ -30,13 +31,14 @@
   </section>
 
   <form class="form-card" method="post" action="/cases/{{ case.id }}/status">
+    {{ csrf_input(request) }}
     <h2>Manual Workflow Update</h2>
     <label for="status">Case status</label>
     <select id="status" name="status" required>
-      {% for status in case.STATUSES %}
-      <option value="{{ status }}" {% if case.status == status %}selected{% endif %}>
-        {{ status }}
-      </option>
+      {% for status in next_statuses %}
+      <option value="{{ status }}">{{ status }}</option>
+      {% else %}
+      <option value="" disabled selected>No valid next status</option>
       {% endfor %}
     </select>
 
@@ -48,15 +50,36 @@
            placeholder="e.g. Local Council" />
     <small>A destination is required when setting the case to Routed.</small>
 
+    <label for="status_note">Transition note</label>
+    <textarea id="status_note"
+              name="status_note"
+              rows="4"
+              placeholder="Optional reviewer note"></textarea>
+
     <div class="form-note">
       This records your manual decision only. The app does not email, submit,
       or forward reports to any organisation.
     </div>
 
     <div class="form-actions">
-      <button class="btn-primary" type="submit">Save Manual Update</button>
+      <button class="btn-primary" type="submit" {% if not next_statuses %}disabled{% endif %}>Save Manual Update</button>
       <a class="btn-secondary" href="/cases/{{ case.id }}">Cancel</a>
     </div>
   </form>
+
+  <section class="card">
+    <h2>Status Event History</h2>
+    <ol class="event-list">
+      {% for event in case.events %}
+      <li>
+        <strong>{{ event.from_status }} → {{ event.to_status }}</strong>
+        <span>by {{ event.reviewer }}{% if event.created_at %} at {{ event.created_at.strftime("%d %b %Y, %H:%M UTC") }}{% endif %}</span>
+        {% if event.note %}<p>{{ event.note }}</p>{% endif %}
+      </li>
+      {% else %}
+      <li>No status transitions have been recorded for this case.</li>
+      {% endfor %}
+    </ol>
+  </section>
 </div>
 {% endblock %}

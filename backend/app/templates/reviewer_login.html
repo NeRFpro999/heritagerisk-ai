@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% from "_csrf.html" import csrf_input %}
+{% block title %}Reviewer Login - HeritageRisk AI{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <p class="breadcrumb"><a href="/">Dashboard</a> / Reviewer Login</p>
+    <h1>Reviewer Login</h1>
+  </div>
+</div>
+
+<form class="form-card" method="post" action="/reviewer/login">
+  {{ csrf_input(request) }}
+  <input type="hidden" name="next_path" value="{{ next_path }}" />
+
+  {% if error %}
+  <div class="ai-notice ai-notice-failed" role="alert">{{ error }}</div>
+  {% endif %}
+
+  <p class="muted">
+    Sign in with the reviewer credential configured for this local application.
+  </p>
+
+  <label for="username">Reviewer username</label>
+  <input id="username"
+         name="username"
+         type="text"
+         autocomplete="username"
+         required />
+
+  <label for="password">Password</label>
+  <input id="password"
+         name="password"
+         type="password"
+         autocomplete="current-password"
+         required />
+
+  <div class="form-actions">
+    <button class="btn-primary" type="submit">Sign In</button>
+    <a class="btn-secondary" href="/">Cancel</a>
+  </div>
+</form>
+{% endblock %}

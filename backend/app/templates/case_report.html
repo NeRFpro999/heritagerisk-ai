@@ -2,6 +2,13 @@
 {% block title %}Report - Case #{{ case.id }} - HeritageRisk AI{% endblock %}
 
 {% block content %}
+{% set original = snapshot.contributor_original or {} %}
+{% set reviewed = snapshot.current_reviewed or {} %}
+{% set ai = snapshot.ai_proposal or {} %}
+{% set decision = snapshot.reviewer_decision or {} %}
+{% set legacy = snapshot.snapshot_source == "legacy_unavailable" %}
+{% set original_available = snapshot.contributor_original is not none %}
+
 <div class="page-header">
   <div>
     <p class="breadcrumb"><a href="/cases/{{ case.id }}">Case #{{ case.id }}</a> / Evidence Report</p>
@@ -17,107 +24,152 @@
   <header class="report-document-header">
     <div>
       <span class="report-label">Human-reviewed visible-risk evidence</span>
-      <h2>{{ site.name }}</h2>
-      <p>{{ site.location or "Location not provided" }}</p>
+      <h2>{{ site.get("name") or "Site details not available" }}</h2>
+      <p>{{ site.get("location") or "Location not provided" }}</p>
+      <p>{{ site.get("description") or "Description not provided" }}</p>
     </div>
     <div class="report-case-summary">
       <span>Case #{{ case.id }}</span>
-      <span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span>
+      <span class="band band-{{ snapshot.band | lower }}">{{ snapshot.band }}</span>
       <span class="status-badge status-{{ case.status | lower | replace(' ', '-') }}">{{ case.status }}</span>
     </div>
   </header>
 
+  {% if snapshot.snapshot_source == "legacy_unavailable" %}
   <section class="report-section">
-    <h2>Site and Observation</h2>
+    <p class="ai-notice ai-notice-failed">
+      Detailed provenance is unavailable because this case predates immutable
+      snapshots. No live Observation values were substituted.
+    </p>
+  </section>
+  {% endif %}
+
+  <section class="report-section">
+    <h2>Contributor Original</h2>
     <dl class="report-data-grid">
-      <div><dt>Site description</dt><dd>{{ site.description or "Not provided" }}</dd></div>
-      <div><dt>Submitted</dt><dd>{{ obs.created_at.strftime("%d %b %Y, %H:%M UTC") }}</dd></div>
-      <div><dt>Contributor notes</dt><dd>{{ obs.notes or "No notes provided" }}</dd></div>
-      <div><dt>Images</dt><dd>{{ obs.images | length }}</dd></div>
+      <div><dt>Observation created</dt><dd>{{ snapshot.observation_created_at or "Not available" }}</dd></div>
+      <div><dt>Submitted</dt><dd>{{ original.get("submitted_at") or "Not available" }}</dd></div>
+      <div><dt>Contributor notes</dt><dd>{% if original_available %}Preserved for reviewer audit; withheld from case reports.{% else %}Not available{% endif %}</dd></div>
+      <div><dt>Original severity</dt><dd>{{ original.get("severity") if original.get("severity") is not none else "Not available" }} / 5</dd></div>
+      <div class="report-data-wide"><dt>Original tags</dt>
+        <dd>
+          {% for tag in original.get("tags") or [] %}
+          <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+          {% else %}{% if original_available %}None recorded{% else %}Not available{% endif %}{% endfor %}
+        </dd>
+      </div>
     </dl>
 
-    {% if obs.images %}
-    <div class="report-image-grid" aria-label="Submitted evidence images">
-      {% for image in obs.images %}
+    {% if snapshot.image_urls %}
+    <div class="report-image-grid" aria-label="Snapshotted evidence images">
+      {% for image_url in snapshot.image_urls %}
       <figure>
-        <img src="{{ image.image_url }}" alt="Submitted evidence image {{ loop.index }}" />
-        <figcaption>Image {{ loop.index }} of {{ obs.images | length }}</figcaption>
+        <img src="{{ image_url }}" alt="Submitted evidence image {{ loop.index }}" />
+        <figcaption>Image {{ loop.index }} of {{ snapshot.image_urls | length }}</figcaption>
       </figure>
       {% endfor %}
     </div>
     {% else %}
-    <p class="empty">No images were attached.</p>
+    <p class="empty">No snapshotted image references are available.</p>
     {% endif %}
   </section>
 
   <section class="report-section">
     <h2>Human Review Audit Trail</h2>
     <dl class="report-data-grid">
-      <div><dt>Human review status</dt><dd>{{ obs.human_review_status.value }}</dd></div>
-      <div><dt>Reviewed before AI analysis</dt><dd>True</dd></div>
+      <div><dt>Reviewed by</dt><dd>{{ snapshot.reviewed_by or "Not available" }}</dd></div>
+      <div><dt>Finalized by</dt><dd>{{ snapshot.finalized_by or "Not available" }}</dd></div>
+      <div><dt>Human review status at finalization</dt><dd>{{ reviewed.human_review_status or ("Not available" if legacy else "Not recorded") }}</dd></div>
+      <div><dt>Decision</dt><dd>{{ decision.decision or ("Not available" if legacy else "Not recorded") }}</dd></div>
+      <div class="report-data-wide"><dt>Reviewed notes at finalization</dt><dd>{{ reviewed.notes or ("Not available" if legacy else "No reviewed notes recorded") }}</dd></div>
       <div><dt>Final tags</dt>
         <dd>
-          {% if obs.tags_list %}
-            {% for tag in obs.tags_list %}
-            <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
-            {% endfor %}
-          {% else %}
-          None recorded
-          {% endif %}
+          {% for tag in snapshot.final_tags %}
+          <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+          {% else %}{% if legacy %}Not available{% else %}None recorded{% endif %}{% endfor %}
         </dd>
       </div>
-      <div><dt>Final severity</dt><dd>{{ obs.severity }} / 5</dd></div>
+      <div><dt>Final severity</dt><dd>{{ snapshot.final_severity if snapshot.final_severity is not none else "Not available" }} / 5</dd></div>
+      <div class="report-data-wide"><dt>Final reviewed summary</dt><dd>{{ snapshot.final_summary or ("Not available" if legacy else "Not recorded") }}</dd></div>
+      <div class="report-data-wide"><dt>Final reviewed next step</dt><dd>{{ snapshot.final_recommended_action or ("Not available" if legacy else "Not recorded") }}</dd></div>
     </dl>
   </section>
 
   <section class="report-section">
-    <h2>Human-Reviewed AI Draft</h2>
-    {% if obs.ai_analysis_status == "mock" %}
+    <h2>AI Proposal</h2>
+    {% if ai.analysis_status == "mock" %}
     <div class="ai-notice ai-notice-mock">Mock fallback was used; image pixels were not analysed.</div>
     {% endif %}
     <dl class="report-data-grid">
-      <div><dt>Provider</dt><dd>{{ obs.ai_provider or "Not recorded" }}</dd></div>
-      <div><dt>Confidence</dt><dd>{{ obs.ai_confidence if obs.ai_confidence is not none else "Not available" }}{% if obs.ai_confidence is not none %} / 100{% endif %}</dd></div>
-      <div><dt>AI-suggested severity</dt><dd>{{ ai_severity }} / 5</dd></div>
+      <div><dt>Provider</dt><dd>{{ ai.provider or ("Not available" if legacy else "Not recorded") }}</dd></div>
+      <div><dt>Schema version</dt><dd>{{ ai.schema_version or "v1" }}</dd></div>
+      <div><dt>Evidence sufficiency</dt><dd>{{ ai.evidence_sufficiency or "Not recorded for v1 rows" }}</dd></div>
+      <div><dt>Confidence</dt><dd>{{ ai.get("confidence") if ai.get("confidence") is not none else "Not available" }}{% if ai.get("confidence") is not none %} / 100{% endif %}</dd></div>
+      <div><dt>AI-suggested severity</dt><dd>{{ ai.get("severity") if ai.get("severity") is not none else "Not available" }} / 5</dd></div>
       <div><dt>AI-suggested tags</dt>
         <dd>
-          {% if ai_tags %}
-            {% for tag in ai_tags %}
-            <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
-            {% endfor %}
-          {% else %}
-          None suggested
-          {% endif %}
+          {% for tag in ai.damage_tags or [] %}
+          <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+          {% else %}{% if legacy %}Not available{% else %}None suggested{% endif %}{% endfor %}
         </dd>
       </div>
-      <div class="report-data-wide"><dt>Final reviewed summary</dt><dd>{{ obs.ai_summary }}</dd></div>
-      <div class="report-data-wide"><dt>Uncertainty</dt><dd>{{ ai_uncertainty }}</dd></div>
-      <div class="report-data-wide"><dt>Recommended next step</dt><dd>{{ obs.ai_recommended_action or "Human review required before action." }}</dd></div>
+      <div class="report-data-wide"><dt>AI summary</dt><dd>{{ ai.summary or ("Not available" if legacy else "Not recorded") }}</dd></div>
+      <div class="report-data-wide"><dt>Uncertainty</dt><dd>{{ ai.uncertainty or ("Not available" if legacy else "Not separately provided") }}</dd></div>
+      <div class="report-data-wide"><dt>AI-recommended next step</dt><dd>{{ ai.recommended_action or ("Not available" if legacy else "Not recorded") }}</dd></div>
     </dl>
+    {% if ai.indicators %}
+    <h3>Proposed Indicators</h3>
+    <ol class="event-list">
+      {% for indicator in ai.indicators %}
+      <li>
+        <strong>{{ TAG_LABELS.get(indicator.indicator_type, indicator.indicator_type) }}</strong>
+        at {{ indicator.evidence_location }};
+        image ids {{ indicator.image_refs | join(", ") }};
+        confidence {{ "%.0f"|format(indicator.confidence * 100) }}%;
+        severity {{ indicator.severity_contribution }} / 5.
+        <p>{{ indicator.supporting_evidence }}</p>
+      </li>
+      {% endfor %}
+    </ol>
+    {% elif ai.evidence_sufficiency == "insufficient" %}
+    <p class="empty">No visible indicators confirmed: {{ ai.insufficient_reason or "insufficient evidence" }}</p>
+    {% endif %}
   </section>
 
   <section class="report-section">
     <h2>Explainable Risk Breakdown</h2>
     <div class="report-score-row">
       <div class="score-display">
-        <span class="score-number">{{ case.risk_score }}</span>
+        <span class="score-number">{{ snapshot.capped_score }}</span>
         <span class="score-denom">/ 100</span>
       </div>
-      <span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }} triage band</span>
+      <span class="band band-{{ snapshot.band | lower }}">{{ snapshot.band }} triage band</span>
     </div>
     <div class="risk-weight-list report-weight-list">
-      {% for item in risk_breakdown.tag_weights %}
+      {% for item in snapshot.tag_weights %}
       <div class="risk-weight-item"><span>{{ item.label }}</span><strong>{{ item.weight }}</strong></div>
       {% else %}
-      <div class="risk-weight-item"><span>No finalized tags</span><strong>0</strong></div>
+      <div class="risk-weight-item">
+        <span>{% if legacy %}Detailed tag weights are not available for this legacy case{% else %}No finalized tag weights available{% endif %}</span>
+        <strong>—</strong>
+      </div>
       {% endfor %}
     </div>
-    <p class="risk-equation">
-      ({{ risk_breakdown.tag_weights | map(attribute="weight") | join(" + ") or "0" }})
-      x Severity {{ risk_breakdown.severity }} = {{ risk_breakdown.raw_score }}
-      {% if risk_breakdown.capped %} -> 100 (capped){% endif %}
+    <dl class="report-data-grid">
+      <div><dt>Multiplier</dt><dd>{{ snapshot.multiplier if snapshot.multiplier is not none else "Not available" }}</dd></div>
+      <div><dt>Capped score</dt><dd>{{ snapshot.capped_score }} / 100{% if snapshot.capped %} (capped){% endif %}</dd></div>
+      <div class="report-data-wide"><dt>Raw equation</dt><dd>{{ snapshot.raw_equation }}</dd></div>
+      <div><dt>Band</dt><dd>{{ snapshot.band }}</dd></div>
+    </dl>
+    <p class="muted">
+      {% if snapshot.thresholds %}
+      Low: {{ snapshot.thresholds.Low }} |
+      Medium: {{ snapshot.thresholds.Medium }} |
+      High: {{ snapshot.thresholds.High }}
+      {% else %}
+      Band thresholds are not available for this legacy case.
+      {% endif %}
     </p>
-    <p class="muted">Low: 0-29 | Medium: 30-59 | High: 60-100</p>
   </section>
 
   <section class="report-section">
@@ -126,6 +178,18 @@
       <div><dt>Case status</dt><dd>{{ case.status }}</dd></div>
       <div><dt>Recorded destination</dt><dd>{{ case.routed_to or "Not routed yet" }}</dd></div>
     </dl>
+    <h3>Status Event History</h3>
+    <ol class="event-list">
+      {% for event in case.events %}
+      <li>
+        <strong>{{ event.from_status }} → {{ event.to_status }}</strong>
+        <span>by {{ event.reviewer }}{% if event.created_at %} at {{ event.created_at.strftime("%d %b %Y, %H:%M UTC") }}{% endif %}</span>
+        {% if event.note %}<p>{{ event.note }}</p>{% endif %}
+      </li>
+      {% else %}
+      <li>No status transitions have been recorded for this case.</li>
+      {% endfor %}
+    </ol>
     <p class="form-note">
       The routing destination is a human-entered record. HeritageRisk AI does
       not email, forward, or submit this report to any organisation.

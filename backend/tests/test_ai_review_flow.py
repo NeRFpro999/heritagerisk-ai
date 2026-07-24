@@ -1,10 +1,19 @@
 import json
+import re
 from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+from tests.auth_helpers import (
+    TEST_REVIEWER_USERNAME,
+    configure_test_reviewer,
+    login_reviewer,
+    post_form,
+    restore_test_reviewer,
+)
 
 
 @pytest.fixture()
@@ -13,6 +22,7 @@ def ai_review_context(tmp_path):
     from app.main import app
     import app.reports as reports_module
     from app.models import HumanReviewStatus, Observation, ObservationImage, Site
+    from app.provenance import build_contributor_original
 
     test_engine = create_engine(
         "sqlite:///:memory:",
@@ -45,27 +55,35 @@ def ai_review_context(tmp_path):
     db.add(site)
     db.flush()
 
+    original_ai_raw = json.dumps(
+        {
+            "damage_tags": ["crack", "erosion"],
+            "severity": 4,
+            "confidence": 72,
+            "summary": "AI summary: crack and erosion indicators are visible.",
+            "uncertainty": "The upper wall is partly obscured.",
+            "recommended_action": "Human review required before routing.",
+        }
+    )
     analyzed_observation = Observation(
         site_id=site.id,
         notes="Contributor notes mention cracking and staining.",
         damage_tags="crack,water_staining",
         severity=3,
         human_review_status=HumanReviewStatus.APPROVED_FOR_AI,
+        reviewed_by=TEST_REVIEWER_USERNAME,
+        contributor_original=build_contributor_original(
+            notes="Original contributor notes mention cracking.",
+            tags=["crack"],
+            severity=2,
+            submitted_at=now,
+        ),
         ai_analysis_status="mock",
         ai_summary="AI summary: crack and erosion indicators are visible.",
         ai_confidence=72,
         ai_provider="mock",
         ai_recommended_action="Human review required before routing.",
-        ai_raw_response=json.dumps(
-            {
-                "damage_tags": ["crack", "erosion"],
-                "severity": 4,
-                "confidence": 72,
-                "summary": "AI summary: crack and erosion indicators are visible.",
-                "uncertainty": "The upper wall is partly obscured.",
-                "recommended_action": "Human review required before routing.",
-            }
-        ),
+        ai_raw_response=original_ai_raw,
         created_at=now,
     )
     no_ai_observation = Observation(
@@ -74,6 +92,13 @@ def ai_review_context(tmp_path):
         damage_tags="graffiti",
         severity=2,
         human_review_status=HumanReviewStatus.APPROVED_FOR_AI,
+        reviewed_by=TEST_REVIEWER_USERNAME,
+        contributor_original=build_contributor_original(
+            notes="Observation with no AI summary.",
+            tags=["graffiti"],
+            severity=2,
+            submitted_at=now,
+        ),
         ai_analysis_status="not_run",
         ai_summary=None,
         created_at=now,
@@ -97,22 +122,26 @@ def ai_review_context(tmp_path):
     )
     db.commit()
 
+    reviewer_settings = configure_test_reviewer()
     client = TestClient(app, raise_server_exceptions=True)
+    login_reviewer(client)
 
     yield {
         "client": client,
         "db": db,
         "analyzed_observation_id": analyzed_id,
         "no_ai_observation_id": no_ai_id,
+        "original_ai_raw": original_ai_raw,
     }
 
     db.close()
+    restore_test_reviewer(reviewer_settings)
     app.dependency_overrides.pop(get_db, None)
     reports_module.REPORTS_DIR = original_reports_dir
     connection.close()
 
 
-def test_ai_review_page_shows_original_evidence_and_ai_output(ai_review_context):
+def test_ai_review_page_shows_original_current_and_ai_values(ai_review_context):
     observation_id = ai_review_context["analyzed_observation_id"]
 
     response = ai_review_context["client"].get(
@@ -120,11 +149,13 @@ def test_ai_review_page_shows_original_evidence_and_ai_output(ai_review_context)
     )
 
     assert response.status_code == 200
-    assert "Original Evidence" in response.text
-    assert "AI Output" in response.text
+    assert "Contributor Original" in response.text
+    assert "Current Reviewed Values" in response.text
+    assert "AI Proposal" in response.text
     assert "Finalize Risk Case" in response.text
     assert "/uploads/ai-review-one.png" in response.text
     assert "/uploads/ai-review-two.png" in response.text
+    assert "Original contributor notes mention cracking." in response.text
     assert "Contributor notes mention cracking and staining." in response.text
     assert "AI summary: crack and erosion indicators are visible." in response.text
     assert "72 / 100" in response.text
@@ -137,11 +168,52 @@ def test_ai_review_page_shows_original_evidence_and_ai_output(ai_review_context)
     assert "/create_risk_case" in response.text
 
 
+def test_missing_ai_severity_is_not_fabricated_from_working_value(
+    ai_review_context,
+):
+    from app.models import Observation
+
+    observation_id = ai_review_context["analyzed_observation_id"]
+    db = ai_review_context["db"]
+    observation = db.query(Observation).filter_by(id=observation_id).one()
+    observation.ai_raw_response = json.dumps(
+        {"damage_tags": ["crack", "erosion"]}
+    )
+    observation.severity = 2
+    db.commit()
+
+    response = ai_review_context["client"].get(
+        f"/observations/{observation_id}/ai_review"
+    )
+
+    assert response.status_code == 200
+    assert "None / 5" not in response.text
+    assert re.search(
+        r"<dt>Suggested severity</dt>\s*<dd>\s*Not available",
+        response.text,
+    )
+    assert '<option value="2" selected>' in response.text
+
+
 def test_ai_review_finalize_creates_risk_case_with_overrides(ai_review_context):
     from app.models import Observation, RiskCase
 
     observation_id = ai_review_context["analyzed_observation_id"]
-    response = ai_review_context["client"].post(
+    db = ai_review_context["db"]
+    db.expire_all()
+    before = db.query(Observation).filter(Observation.id == observation_id).one()
+    original_submission = json.dumps(before.contributor_original, sort_keys=True)
+    ai_proposal = (
+        before.ai_analysis_status,
+        before.ai_summary,
+        before.ai_confidence,
+        before.ai_provider,
+        before.ai_recommended_action,
+        before.ai_raw_response,
+    )
+
+    response = post_form(
+        ai_review_context["client"],
         f"/observations/{observation_id}/create_risk_case",
         data={
             "final_damage_tags": ["crack", "erosion", "corrosion"],
@@ -157,28 +229,62 @@ def test_ai_review_finalize_creates_risk_case_with_overrides(ai_review_context):
     assert response.status_code == 303
     assert response.headers["location"].startswith("/cases/")
 
-    db = ai_review_context["db"]
     db.expire_all()
     observation = db.query(Observation).filter(Observation.id == observation_id).first()
     risk_case = db.query(RiskCase).filter(RiskCase.observation_id == observation_id).first()
 
     assert observation.damage_tags == "crack,erosion,corrosion"
     assert observation.severity == 4
-    assert observation.ai_summary == (
-        "Reviewer-confirmed visible crack and erosion evidence."
+    assert json.dumps(observation.contributor_original, sort_keys=True) == (
+        original_submission
     )
-    assert observation.ai_recommended_action == (
-        "Ask the local conservation officer to review."
-    )
-    raw_data = json.loads(observation.ai_raw_response)
-    assert raw_data["human_ai_review"]["decision"] == "Edited and accepted"
-    assert raw_data["human_ai_review"]["reviewer_notes"] == (
+    assert (
+        observation.ai_analysis_status,
+        observation.ai_summary,
+        observation.ai_confidence,
+        observation.ai_provider,
+        observation.ai_recommended_action,
+        observation.ai_raw_response,
+    ) == ai_proposal
+    assert observation.ai_raw_response == ai_review_context["original_ai_raw"]
+    assert observation.ai_review_decision["decision"] == "Edited and accepted"
+    assert observation.ai_review_decision["reviewer_notes"] == (
         "Removed an unsupported certainty claim."
     )
     assert risk_case is not None
+    assert risk_case.finalized_by == TEST_REVIEWER_USERNAME
     assert risk_case.routed_to == "Local Council"
-    assert risk_case.risk_score > 0
+    assert risk_case.risk_score == 88
+    assert risk_case.risk_band == "High"
     assert risk_case.report_path
+    assert risk_case.final_snapshot["final_tags"] == [
+        "crack",
+        "erosion",
+        "corrosion",
+    ]
+    assert risk_case.final_snapshot["final_severity"] == 4
+    assert risk_case.final_snapshot["tag_weights"] == [
+        {"tag": "crack", "label": "Crack", "weight": 8},
+        {"tag": "erosion", "label": "Erosion", "weight": 7},
+        {"tag": "corrosion", "label": "Corrosion / Rust", "weight": 7},
+    ]
+    assert risk_case.final_snapshot["multiplier"] == 4
+    assert risk_case.final_snapshot["raw_equation"] == (
+        "(8 + 7 + 7) × Severity 4 = 88"
+    )
+    assert risk_case.final_snapshot["capped_score"] == 88
+    assert risk_case.final_snapshot["band"] == "High"
+    assert risk_case.final_snapshot["final_summary"] == (
+        "Reviewer-confirmed visible crack and erosion evidence."
+    )
+    assert risk_case.final_snapshot["final_recommended_action"] == (
+        "Ask the local conservation officer to review."
+    )
+    assert risk_case.final_snapshot["reviewed_by"] == TEST_REVIEWER_USERNAME
+    assert risk_case.final_snapshot["finalized_by"] == TEST_REVIEWER_USERNAME
+    assert risk_case.final_snapshot["ai_proposal"]["raw_response"] == (
+        ai_review_context["original_ai_raw"]
+    )
 
     html_report = ai_review_context["client"].get(
         f"/cases/{risk_case.id}/report"
@@ -191,11 +297,71 @@ def test_ai_review_finalize_creates_risk_case_with_overrides(ai_review_context):
     assert "not email, forward, or submit" in html_report.text
 
 
+def test_legacy_create_case_route_preserves_ai_proposal_and_snapshots_final(
+    ai_review_context,
+):
+    from app.models import Observation, RiskCase
+
+    observation_id = ai_review_context["analyzed_observation_id"]
+    db = ai_review_context["db"]
+    before = db.query(Observation).filter_by(id=observation_id).one()
+    original_submission = json.dumps(before.contributor_original, sort_keys=True)
+    ai_proposal = (
+        before.ai_analysis_status,
+        before.ai_summary,
+        before.ai_confidence,
+        before.ai_provider,
+        before.ai_recommended_action,
+        before.ai_raw_response,
+    )
+
+    response = post_form(
+        ai_review_context["client"],
+        f"/observations/{observation_id}/create_case",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    db.expire_all()
+    observation = db.query(Observation).filter_by(id=observation_id).one()
+    case = db.query(RiskCase).filter_by(observation_id=observation_id).one()
+    assert json.dumps(observation.contributor_original, sort_keys=True) == (
+        original_submission
+    )
+    assert (
+        observation.ai_analysis_status,
+        observation.ai_summary,
+        observation.ai_confidence,
+        observation.ai_provider,
+        observation.ai_recommended_action,
+        observation.ai_raw_response,
+    ) == ai_proposal
+    assert observation.ai_review_decision["decision"] == "Edited and accepted"
+    assert case.finalized_by == TEST_REVIEWER_USERNAME
+    assert case.final_snapshot["final_tags"] == ["crack", "water_staining"]
+    assert case.final_snapshot["final_severity"] == 3
+    assert case.final_snapshot["ai_proposal"]["raw_response"] == ai_proposal[-1]
+
+
 def test_reviewer_can_reject_ai_draft_and_block_case_creation(ai_review_context):
     from app.models import Observation, RiskCase
 
     observation_id = ai_review_context["analyzed_observation_id"]
-    response = ai_review_context["client"].post(
+    db = ai_review_context["db"]
+    db.expire_all()
+    before = db.query(Observation).filter(Observation.id == observation_id).one()
+    original_submission = json.dumps(before.contributor_original, sort_keys=True)
+    ai_proposal = (
+        before.ai_analysis_status,
+        before.ai_summary,
+        before.ai_confidence,
+        before.ai_provider,
+        before.ai_recommended_action,
+        before.ai_raw_response,
+    )
+
+    response = post_form(
+        ai_review_context["client"],
         f"/observations/{observation_id}/reject_ai_analysis",
         data={"rejection_reason": "The second image was not addressed."},
         follow_redirects=False,
@@ -204,11 +370,21 @@ def test_reviewer_can_reject_ai_draft_and_block_case_creation(ai_review_context)
     assert response.status_code == 303
     assert response.headers["location"] == f"/observations/{observation_id}"
 
-    db = ai_review_context["db"]
     db.expire_all()
     observation = db.query(Observation).filter(Observation.id == observation_id).one()
-    assert observation.ai_analysis_status == "rejected"
-    review_data = json.loads(observation.ai_raw_response)["human_ai_review"]
+    assert json.dumps(observation.contributor_original, sort_keys=True) == (
+        original_submission
+    )
+    assert (
+        observation.ai_analysis_status,
+        observation.ai_summary,
+        observation.ai_confidence,
+        observation.ai_provider,
+        observation.ai_recommended_action,
+        observation.ai_raw_response,
+    ) == ai_proposal
+    assert observation.ai_raw_response == ai_review_context["original_ai_raw"]
+    review_data = observation.ai_review_decision
     assert review_data["decision"] == "Rejected"
     assert review_data["reviewer_notes"] == "The second image was not addressed."
     assert review_data["reviewed_at"]
@@ -219,7 +395,8 @@ def test_reviewer_can_reject_ai_draft_and_block_case_creation(ai_review_context)
         is None
     )
 
-    blocked = ai_review_context["client"].post(
+    blocked = post_form(
+        ai_review_context["client"],
         f"/observations/{observation_id}/create_risk_case",
         data={"final_damage_tags": ["crack"], "final_severity": "3"},
     )
@@ -230,7 +407,8 @@ def test_case_status_has_manual_page_and_routed_requires_destination(ai_review_c
     from app.models import RiskCase
 
     observation_id = ai_review_context["analyzed_observation_id"]
-    created = ai_review_context["client"].post(
+    created = post_form(
+        ai_review_context["client"],
         f"/observations/{observation_id}/create_risk_case",
         data={"final_damage_tags": ["crack"], "final_severity": "3"},
         follow_redirects=False,
@@ -242,13 +420,31 @@ def test_case_status_has_manual_page_and_routed_requires_destination(ai_review_c
     assert "Manual Workflow Update" in page.text
     assert "does not email, submit" in page.text
 
-    invalid = ai_review_context["client"].post(
+    draft_to_needs_review = post_form(
+        ai_review_context["client"],
+        f"/cases/{case_id}/status",
+        data={"status": "Needs Review"},
+        follow_redirects=False,
+    )
+    assert draft_to_needs_review.status_code == 303
+
+    needs_review_to_verified = post_form(
+        ai_review_context["client"],
+        f"/cases/{case_id}/status",
+        data={"status": "Verified"},
+        follow_redirects=False,
+    )
+    assert needs_review_to_verified.status_code == 303
+
+    invalid = post_form(
+        ai_review_context["client"],
         f"/cases/{case_id}/status",
         data={"status": "Routed", "routed_to": ""},
     )
     assert invalid.status_code == 400
 
-    updated = ai_review_context["client"].post(
+    updated = post_form(
+        ai_review_context["client"],
         f"/cases/{case_id}/status",
         data={"status": "Routed", "routed_to": "Local Council"},
         follow_redirects=False,
@@ -259,18 +455,22 @@ def test_case_status_has_manual_page_and_routed_requires_destination(ai_review_c
     case = db.query(RiskCase).filter(RiskCase.id == case_id).one()
     assert case.status == "Routed"
     assert case.routed_to == "Local Council"
+    assert len(case.events) == 3
 
     report = ai_review_context["client"].get(f"/cases/{case_id}/report.md")
     assert report.status_code == 200
     assert "**Status:** Routed" in report.text
     assert "Final routing destination: Local Council" in report.text
+    assert "Draft -> Needs Review" in report.text
+    assert "Verified -> Routed" in report.text
 
 
 @pytest.mark.parametrize("path_suffix", ["create_risk_case", "create_case"])
 def test_risk_case_creation_requires_ai_summary(ai_review_context, path_suffix):
     no_ai_id = ai_review_context["no_ai_observation_id"]
 
-    response = ai_review_context["client"].post(
+    response = post_form(
+        ai_review_context["client"],
         f"/observations/{no_ai_id}/{path_suffix}",
         data={
             "final_damage_tags": ["graffiti"],
@@ -289,6 +489,7 @@ def test_pending_observation_cannot_create_case_even_with_ai_fields(
     ai_review_context,
 ):
     from app.models import HumanReviewStatus, Observation
+    from app.provenance import build_contributor_original
 
     db = ai_review_context["db"]
     approved_observation = db.query(Observation).filter(
@@ -300,13 +501,20 @@ def test_pending_observation_cannot_create_case_even_with_ai_fields(
         damage_tags="crack",
         severity=3,
         human_review_status=HumanReviewStatus.PENDING,
+        contributor_original=build_contributor_original(
+            notes="Pending evidence.",
+            tags=["crack"],
+            severity=3,
+            submitted_at=datetime.now(timezone.utc),
+        ),
         ai_analysis_status="mock",
         ai_summary="Injected AI summary must not bypass review.",
     )
     db.add(pending)
     db.commit()
 
-    response = ai_review_context["client"].post(
+    response = post_form(
+        ai_review_context["client"],
         f"/observations/{pending.id}/create_risk_case",
         data={"final_damage_tags": ["crack"], "final_severity": "3"},
     )

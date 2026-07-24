@@ -11,7 +11,7 @@
   </div>
   <div class="page-header-actions">
     <a class="btn-secondary" href="/">Back to Dashboard</a>
-    <a class="btn-primary" href="/sites/{{ site.id }}/observations/new">Upload Observation</a>
+    <a class="btn-primary" href="/observations/submit?site_id={{ site.id }}">Submit Observation</a>
     <a class="btn-secondary" href="/cases">View Risk Cases</a>
   </div>
 </div>
@@ -71,7 +71,7 @@
 {# ── Observations ─────────────────────────────────────────────────────────── #}
 <div class="section-header">
   <h2>Observations <span class="badge">{{ site.observations | length }}</span></h2>
-  <a class="btn-primary btn-sm" href="/sites/{{ site.id }}/observations/new">Upload Observation</a>
+  <a class="btn-primary btn-sm" href="/observations/submit?site_id={{ site.id }}">Submit Observation</a>
 </div>
 
 {% if site.observations %}
@@ -100,14 +100,15 @@
           <span class="file-pill">{{ obs.primary_image_label }}</span>
         {% endif %}
         {# AI status badge #}
-        {% if obs.ai_analysis_status == "complete" %}
+        {% set ai_review = ai_reviews.get(obs.id, {}) %}
+        {% if ai_review.get("decision") == "Rejected" %}
+          <span class="ai-badge ai-badge-failed">AI: Rejected</span>
+        {% elif obs.ai_analysis_status == "complete" %}
           <span class="ai-badge ai-badge-complete">AI: {{ obs.ai_provider or "Azure" }}</span>
         {% elif obs.ai_analysis_status == "mock" %}
           <span class="ai-badge ai-badge-mock">AI: {{ obs.ai_provider or "Mock" }}</span>
         {% elif obs.ai_analysis_status == "failed" %}
           <span class="ai-badge ai-badge-failed">AI: Failed</span>
-        {% elif obs.ai_analysis_status == "rejected" %}
-          <span class="ai-badge ai-badge-failed">AI: Rejected</span>
         {% else %}
           <span class="ai-badge ai-badge-pending">AI: Not run</span>
         {% endif %}
@@ -144,7 +145,7 @@
         {% else %}
           {% if obs.human_review_status.value == "Sensitive" %}
           <a class="btn-primary btn-sm" href="/observations/{{ obs.id }}/review">Review Sensitive Submission</a>
-          {% elif obs.ai_summary and obs.ai_analysis_status in ["complete", "mock"] %}
+          {% elif obs.ai_summary and obs.ai_analysis_status in ["complete", "mock"] and ai_review.get("decision") != "Rejected" %}
           <a class="btn-primary btn-sm" href="/observations/{{ obs.id }}/ai_review">Review AI Output</a>
           {% elif obs.human_review_status.value == "Pending" %}
           <a class="btn-primary btn-sm" href="/observations/{{ obs.id }}/review">Review Submission</a>
@@ -162,7 +163,7 @@
 {% else %}
 <div class="card">
   <p class="empty">No observations yet for this site.</p>
-  <a class="btn-primary mt" href="/sites/{{ site.id }}/observations/new">Upload the first observation</a>
+  <a class="btn-primary mt" href="/observations/submit?site_id={{ site.id }}">Submit the first observation</a>
 </div>
 {% endif %}
 

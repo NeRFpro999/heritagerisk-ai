@@ -7,11 +7,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-TINY_PNG = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
-    b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+from tests.auth_helpers import (
+    TEST_REVIEWER_USERNAME,
+    configure_test_reviewer,
+    login_reviewer,
+    post_form,
+    restore_test_reviewer,
 )
+from tests.image_helpers import TINY_PNG
 
 
 @pytest.fixture()
@@ -20,6 +23,7 @@ def review_action_context(tmp_path):
     import app.main as main_module
     from app.main import app
     from app.models import HumanReviewStatus, Observation, ObservationImage, Site
+    from app.provenance import build_contributor_original
 
     test_engine = create_engine(
         "sqlite:///:memory:",
@@ -58,6 +62,12 @@ def review_action_context(tmp_path):
         damage_tags="crack",
         severity=2,
         human_review_status=HumanReviewStatus.PENDING,
+        contributor_original=build_contributor_original(
+            notes="Original public submission notes.",
+            tags=["crack"],
+            severity=2,
+            submitted_at=now,
+        ),
         created_at=now,
     )
     db.add(observation)
@@ -70,7 +80,9 @@ def review_action_context(tmp_path):
     )
     db.commit()
 
+    reviewer_settings = configure_test_reviewer()
     client = TestClient(app, raise_server_exceptions=True)
+    login_reviewer(client)
 
     yield {
         "client": client,
@@ -80,6 +92,7 @@ def review_action_context(tmp_path):
     }
 
     db.close()
+    restore_test_reviewer(reviewer_settings)
     app.dependency_overrides.pop(get_db, None)
     main_module.UPLOADS_DIR = original_uploads_dir
     connection.close()
@@ -94,6 +107,9 @@ def test_review_action_form_loads(review_action_context):
 
     assert response.status_code == 200
     assert "Review Observation" in response.text
+    assert "Contributor Original" in response.text
+    assert "Current Reviewed Values" in response.text
+    assert "Original public submission notes." in response.text
     assert 'action="/observations/' in response.text
     assert 'name="human_review_status"' in response.text
     assert 'name="reviewer_notes"' in response.text
@@ -109,7 +125,13 @@ def test_reviewer_can_approve_and_override_tags_and_severity(review_action_conte
     from app.models import HumanReviewStatus, Observation
 
     observation_id = review_action_context["observation_id"]
-    response = review_action_context["client"].post(
+    db = review_action_context["db"]
+    db.expire_all()
+    before = db.query(Observation).filter(Observation.id == observation_id).one()
+    original_submission = before.contributor_original.copy()
+
+    response = post_form(
+        review_action_context["client"],
         f"/observations/{observation_id}/review",
         data={
             "human_review_status": "ApprovedForAI",
@@ -123,13 +145,23 @@ def test_reviewer_can_approve_and_override_tags_and_severity(review_action_conte
     assert response.status_code == 303
     assert response.headers["location"] == f"/observations/{observation_id}"
 
-    db = review_action_context["db"]
     db.expire_all()
     observation = db.query(Observation).filter(Observation.id == observation_id).first()
     assert observation.human_review_status == HumanReviewStatus.APPROVED_FOR_AI
     assert observation.notes == "Redacted public submission notes."
     assert observation.damage_tags == "erosion,corrosion"
     assert observation.severity == 5
+    assert observation.reviewed_by == TEST_REVIEWER_USERNAME
+    assert observation.contributor_original == original_submission
+
+    reviewer_page = review_action_context["client"].get(
+        f"/observations/{observation_id}/review"
+    )
+    assert reviewer_page.status_code == 200
+    assert "Contributor Original" in reviewer_page.text
+    assert "Current Reviewed Values" in reviewer_page.text
+    assert "Original public submission notes." in reviewer_page.text
+    assert "Redacted public submission notes." in reviewer_page.text
 
 
 def test_reviewer_can_approve_and_run_all_image_analysis(review_action_context):
@@ -151,7 +183,8 @@ def test_reviewer_can_approve_and_run_all_image_analysis(review_action_context):
         "app.main.analyze_observation_images",
         return_value=result,
     ) as analyze_mock:
-        response = review_action_context["client"].post(
+        response = post_form(
+            review_action_context["client"],
             f"/observations/{observation_id}/review",
             data={
                 "human_review_status": "ApprovedForAI",
@@ -188,7 +221,8 @@ def test_sensitive_observation_is_hidden_from_general_views(review_action_contex
     site_id = review_action_context["site_id"]
     client = review_action_context["client"]
 
-    response = client.post(
+    response = post_form(
+        client,
         f"/observations/{observation_id}/review",
         data={
             "human_review_status": "Sensitive",
@@ -220,7 +254,8 @@ def test_review_action_rejects_invalid_status(review_action_context, status):
     from app.models import HumanReviewStatus, Observation
 
     observation_id = review_action_context["observation_id"]
-    response = review_action_context["client"].post(
+    response = post_form(
+        review_action_context["client"],
         f"/observations/{observation_id}/review",
         data={
             "human_review_status": status,
@@ -246,7 +281,8 @@ def test_public_submission_ignores_injected_review_status(review_action_context)
     from app.models import HumanReviewStatus, Observation
 
     site_id = review_action_context["site_id"]
-    response = review_action_context["client"].post(
+    response = post_form(
+        review_action_context["client"],
         "/observations/submit",
         data={
             "site_id": str(site_id),
@@ -268,11 +304,16 @@ def test_public_submission_ignores_injected_review_status(review_action_context)
         Observation.id == payload["observation_id"]
     ).first()
     assert observation.human_review_status == HumanReviewStatus.PENDING
+    assert observation.contributor_original["notes"] == "Attempted status injection."
+    assert observation.contributor_original["tags"] == ["graffiti"]
+    assert observation.contributor_original["severity"] == 4
+    assert observation.contributor_original["submitted_at"]
 
 
 def test_browser_submission_redirects_to_pending_confirmation(review_action_context):
     site_id = review_action_context["site_id"]
-    response = review_action_context["client"].post(
+    response = post_form(
+        review_action_context["client"],
         "/observations/submit",
         data={
             "site_id": str(site_id),
@@ -303,7 +344,8 @@ def test_public_submission_limits_image_count(review_action_context):
         ("images", (f"image-{index}.png", io.BytesIO(TINY_PNG), "image/png"))
         for index in range(7)
     ]
-    response = review_action_context["client"].post(
+    response = post_form(
+        review_action_context["client"],
         "/observations/submit",
         data={"site_id": str(site_id), "severity": "1"},
         files=files,
@@ -316,7 +358,8 @@ def test_public_submission_limits_image_count(review_action_context):
 def test_public_submission_can_describe_new_site(review_action_context):
     from app.models import HumanReviewStatus, Observation, Site
 
-    response = review_action_context["client"].post(
+    response = post_form(
+        review_action_context["client"],
         "/observations/submit",
         data={
             "site_name": "New Public Monument",
@@ -346,3 +389,9 @@ def test_public_submission_can_describe_new_site(review_action_context):
     assert observation.human_review_status == HumanReviewStatus.PENDING
     assert observation.notes == "Visible water staining on the base."
     assert observation.damage_tags == "water_staining"
+    assert observation.contributor_original["notes"] == (
+        "Visible water staining on the base."
+    )
+    assert observation.contributor_original["tags"] == ["water_staining"]
+    assert observation.contributor_original["severity"] == 3
+    assert observation.contributor_original["submitted_at"]

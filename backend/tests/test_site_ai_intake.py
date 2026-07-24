@@ -6,12 +6,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-
-TINY_PNG = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
-    b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+from tests.auth_helpers import (
+    TEST_REVIEWER_USERNAME,
+    configure_test_reviewer,
+    login_reviewer,
+    post_form,
+    restore_test_reviewer,
 )
+from tests.image_helpers import TINY_PNG
 
 
 @pytest.fixture()
@@ -41,11 +43,14 @@ def site_intake_context(tmp_path):
     main_module.UPLOADS_DIR = tmp_path
 
     db = TestSessionLocal()
+    reviewer_settings = configure_test_reviewer()
     client = TestClient(app, raise_server_exceptions=True)
+    login_reviewer(client)
 
     yield {"client": client, "db": db, "uploads_dir": tmp_path}
 
     db.close()
+    restore_test_reviewer(reviewer_settings)
     app.dependency_overrides.pop(get_db, None)
     main_module.UPLOADS_DIR = original_uploads_dir
     connection.close()
@@ -55,7 +60,8 @@ def test_add_site_without_images_keeps_site_only_flow(site_intake_context):
     from app.models import Observation, Site
 
     with patch("app.main.analyze_observation_images") as analyze_mock:
-        response = site_intake_context["client"].post(
+        response = post_form(
+            site_intake_context["client"],
             "/sites",
             data={
                 "name": "No Image Monument",
@@ -76,6 +82,7 @@ def test_add_site_without_images_keeps_site_only_flow(site_intake_context):
 
 def test_add_site_with_images_runs_ai_intake(site_intake_context):
     from app.models import HumanReviewStatus, Observation, Site
+    from app.provenance import utc_iso
     from app.services.ai_analysis import AIAnalysisResult
 
     analysis_result = AIAnalysisResult(
@@ -96,7 +103,8 @@ def test_add_site_with_images_runs_ai_intake(site_intake_context):
         "app.main.analyze_observation_images",
         return_value=analysis_result,
     ) as analyze_mock:
-        response = site_intake_context["client"].post(
+        response = post_form(
+            site_intake_context["client"],
             "/sites",
             data={
                 "name": "AI Intake Monument",
@@ -118,12 +126,19 @@ def test_add_site_with_images_runs_ai_intake(site_intake_context):
     observation = db.query(Observation).filter(Observation.site_id == site.id).one()
 
     assert observation.human_review_status == HumanReviewStatus.APPROVED_FOR_AI
+    assert observation.reviewed_by == TEST_REVIEWER_USERNAME
     assert len(observation.images) == 2
     assert observation.ai_analysis_status == "complete"
     assert observation.ai_provider == "azure:gpt-5-mini"
     assert observation.ai_summary == "Visible cracking and water staining are present."
     assert observation.tags_list == []
     assert observation.severity == 1
+    assert observation.contributor_original == {
+        "notes": "Photos show the front and side faces.",
+        "tags": [],
+        "severity": 1,
+        "submitted_at": utc_iso(observation.created_at),
+    }
     assert '"damage_tags": ["crack", "water_staining"]' in observation.ai_raw_response
     assert '"severity": 4' in observation.ai_raw_response
 

@@ -1,3 +1,4 @@
+{% from "_csrf.html" import csrf_input %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -20,7 +21,18 @@
         <li><a href="/observations/review">Review</a></li>
         <li><a href="/cases">Cases</a></li>
       </ul>
+      {% set reviewer_username = current_reviewer(request) %}
+      {% if reviewer_username %}
       <a class="btn-primary btn-sm nav-cta" href="/sites/new">Reviewer Intake</a>
+      <form method="post" action="/reviewer/logout" style="display:inline">
+        {{ csrf_input(request) }}
+        <button class="btn-secondary btn-sm" type="submit">
+          Sign Out {{ reviewer_username }}
+        </button>
+      </form>
+      {% else %}
+      <a class="btn-primary btn-sm nav-cta" href="/reviewer/login">Reviewer Login</a>
+      {% endif %}
     </nav>
   </header>
 

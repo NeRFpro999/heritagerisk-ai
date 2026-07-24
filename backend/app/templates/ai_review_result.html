@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_csrf.html" import csrf_input %}
 {% block title %}AI Review - Observation #{{ obs.id }}{% endblock %}
 
 {% block content %}
@@ -18,7 +19,7 @@
 
 <div class="ai-review-layout">
   <section class="card ai-review-card">
-    <h2>Original Evidence</h2>
+    <h2>Contributor Original</h2>
 
     {% set image_count = obs.images | length %}
     {% if image_count == 1 %}
@@ -42,9 +43,36 @@
     <dl class="meta">
       <dt>Site</dt>
       <dd>{{ site.name }}</dd>
+      {% if contributor_original %}
       <dt>Contributor notes</dt>
+      <dd>{{ contributor_original.notes or "No notes provided." }}</dd>
+      <dt>Selected tags</dt>
+      <dd>
+        {% if contributor_original.tags %}
+          {% for tag in contributor_original.tags %}
+          <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+          {% endfor %}
+        {% else %}
+        <span class="muted">None recorded</span>
+        {% endif %}
+      </dd>
+      <dt>Severity</dt>
+      <dd><span class="severity-pill">{{ contributor_original.severity }} / 5</span></dd>
+      <dt>Submitted at</dt>
+      <dd>{{ contributor_original.submitted_at }}</dd>
+      {% else %}
+      <dt>Original values</dt>
+      <dd>Unavailable for this pre-provenance record.</dd>
+      {% endif %}
+    </dl>
+  </section>
+
+  <section class="card ai-review-card">
+    <h2>Current Reviewed Values</h2>
+    <dl class="meta">
+      <dt>Notes</dt>
       <dd>{{ obs.notes or "No notes provided." }}</dd>
-      <dt>Originally selected tags</dt>
+      <dt>Tags</dt>
       <dd>
         {% if obs.tags_list %}
           {% for tag in obs.tags_list %}
@@ -54,13 +82,13 @@
         <span class="muted">None recorded</span>
         {% endif %}
       </dd>
-      <dt>Current severity</dt>
+      <dt>Severity</dt>
       <dd><span class="severity-pill">{{ obs.severity }} / 5</span></dd>
     </dl>
   </section>
 
   <section class="card ai-review-card ai-panel">
-    <h2>AI Output</h2>
+    <h2>AI Proposal</h2>
     {% if obs.ai_analysis_status == "mock" %}
     <div class="ai-notice ai-notice-mock">
       Mock analysis used because Azure AI is disabled or unavailable.
@@ -68,6 +96,16 @@
     {% endif %}
 
     <dl class="meta">
+      {% if ai_result_v2 %}
+      <dt>Schema</dt>
+      <dd>v{{ ai_result_v2.schema_version }}</dd>
+      <dt>Evidence sufficiency</dt>
+      <dd>{{ ai_result_v2.evidence_sufficiency }}</dd>
+      {% if ai_result_v2.insufficient_reason %}
+      <dt>Insufficient evidence reason</dt>
+      <dd>{{ ai_result_v2.insufficient_reason }}</dd>
+      {% endif %}
+      {% endif %}
       <dt>Summary</dt>
       <dd>{{ obs.ai_summary }}</dd>
       <dt>Suggested tags</dt>
@@ -89,19 +127,97 @@
         {% endif %}
       </dd>
       <dt>Suggested severity</dt>
-      <dd><span class="severity-pill">{{ ai_severity }} / 5</span></dd>
+      <dd>
+        {% if ai_severity is not none %}
+        <span class="severity-pill">{{ ai_severity }} / 5</span>
+        {% else %}
+        Not available
+        {% endif %}
+      </dd>
       <dt>Uncertainty</dt>
       <dd>{{ ai_uncertainty }}</dd>
       <dt>Recommended next step</dt>
       <dd>{{ obs.ai_recommended_action or "Human review required before any action." }}</dd>
     </dl>
+
+    {% if ai_indicators %}
+    <h3>Proposed Indicators</h3>
+    <div class="indicator-list">
+      {% for indicator in ai_indicators %}
+      <article class="indicator-card">
+        <h4>{{ TAG_LABELS.get(indicator.indicator_type, indicator.indicator_type) }}</h4>
+        <dl class="meta">
+          <dt>Evidence location</dt><dd>{{ indicator.evidence_location }}</dd>
+          <dt>Image references</dt><dd>{{ indicator.image_refs | join(", ") }}</dd>
+          <dt>Confidence</dt><dd>{{ "%.0f"|format(indicator.confidence * 100) }}%</dd>
+          <dt>Visible evidence</dt><dd>{{ indicator.supporting_evidence }}</dd>
+          <dt>Severity contribution</dt><dd>{{ indicator.severity_contribution }} / 5</dd>
+        </dl>
+      </article>
+      {% endfor %}
+    </div>
+    {% elif ai_result_v2 and ai_result_v2.evidence_sufficiency == "insufficient" %}
+    <div class="ai-notice ai-notice-failed">
+      No visible indicators were proposed. This can be finalized as no visible
+      indicators confirmed.
+    </div>
+    {% endif %}
   </section>
 </div>
 
 <form class="form-card finalize-case-form"
       method="post"
       action="/observations/{{ obs.id }}/create_risk_case">
+  {{ csrf_input(request) }}
   <h2>Finalize Risk Case</h2>
+
+  {% if ai_result_v2 %}
+  <fieldset>
+    <legend>Review proposed indicators</legend>
+    {% if ai_indicators %}
+    <div class="indicator-list">
+      {% for indicator in ai_indicators %}
+      <div class="indicator-card">
+        <strong>{{ TAG_LABELS.get(indicator.indicator_type, indicator.indicator_type) }}</strong>
+        <p class="muted">
+          {{ indicator.evidence_location }} ·
+          confidence {{ "%.0f"|format(indicator.confidence * 100) }}% ·
+          image ids {{ indicator.image_refs | join(", ") }}
+        </p>
+        <input type="hidden" name="indicator_original_type" value="{{ indicator.indicator_type }}" />
+        <label for="indicator-action-{{ loop.index }}">Decision</label>
+        <select id="indicator-action-{{ loop.index }}" name="indicator_action">
+          <option value="accept" selected>Accept</option>
+          <option value="edit">Edit</option>
+          <option value="reject">Reject</option>
+        </select>
+        <label for="indicator-type-{{ loop.index }}">Final indicator type</label>
+        <select id="indicator-type-{{ loop.index }}" name="indicator_type">
+          {% for tag in all_tags %}
+          <option value="{{ tag }}" {% if tag == indicator.indicator_type %}selected{% endif %}>
+            {{ TAG_LABELS.get(tag, tag.replace("_", " ") | title) }}
+          </option>
+          {% endfor %}
+        </select>
+        <label for="indicator-severity-{{ loop.index }}">Severity contribution</label>
+        <select id="indicator-severity-{{ loop.index }}" name="indicator_severity">
+          {% for score in [1, 2, 3, 4, 5] %}
+          <option value="{{ score }}" {% if score == indicator.severity_contribution %}selected{% endif %}>
+            {{ score }} / 5
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">
+      The AI returned no indicators. Finalizing with no selected damage tags
+      records no visible indicators confirmed.
+    </p>
+    {% endif %}
+  </fieldset>
+  {% endif %}
 
   <fieldset>
     <legend>Final visible damage tags</legend>
@@ -133,7 +249,7 @@
   <label for="final_severity">Final severity multiplier <span class="required">*</span></label>
   <select id="final_severity" name="final_severity" required>
     {% for score in [1, 2, 3, 4, 5] %}
-    <option value="{{ score }}" {% if ai_severity == score %}selected{% endif %}>
+    <option value="{{ score }}" {% if final_severity_default == score %}selected{% endif %}>
       {{ score }} / 5
     </option>
     {% endfor %}
@@ -161,6 +277,7 @@
 <form class="form-card reject-ai-form"
       method="post"
       action="/observations/{{ obs.id }}/reject_ai_analysis">
+  {{ csrf_input(request) }}
   <h2>Reject AI Draft</h2>
   <p class="muted">
     Rejecting the draft prevents Risk Case creation until the analysis is run

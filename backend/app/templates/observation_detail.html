@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_csrf.html" import csrf_input %}
 {% block title %}Observation #{{ obs.id }} — HeritageRisk AI{% endblock %}
 
 {% block content %}
@@ -64,14 +65,14 @@
 <div class="card ai-panel">
   <div class="ai-panel-header">
     <h2>AI Analysis
-      {% if obs.ai_analysis_status == "complete" %}
+      {% if ai_review.get("decision") == "Rejected" %}
+        <span class="ai-badge ai-badge-failed">REJECTED BY REVIEWER</span>
+      {% elif obs.ai_analysis_status == "complete" %}
         <span class="ai-badge ai-badge-complete">AZURE OPENAI</span>
       {% elif obs.ai_analysis_status == "mock" %}
         <span class="ai-badge ai-badge-mock">MOCK / FALLBACK</span>
       {% elif obs.ai_analysis_status == "failed" %}
         <span class="ai-badge ai-badge-failed">FAILED</span>
-      {% elif obs.ai_analysis_status == "rejected" %}
-        <span class="ai-badge ai-badge-failed">REJECTED BY REVIEWER</span>
       {% else %}
         <span class="ai-badge ai-badge-pending">Not run</span>
       {% endif %}
@@ -79,8 +80,9 @@
 
     {% if obs.human_review_status.value == "ApprovedForAI" and not obs.risk_case %}
     <form method="post" action="/observations/{{ obs.id }}/analyze">
+      {{ csrf_input(request) }}
       <button class="btn-primary btn-sm" type="submit">
-        {% if obs.ai_analysis_status in ["complete", "mock", "failed", "rejected"] %}Re-run All-Image Analysis{% else %}Analyze All Images{% endif %}
+        {% if obs.ai_analysis_status in ["complete", "mock", "failed"] or ai_review.get("decision") == "Rejected" %}Re-run All-Image Analysis{% else %}Analyze All Images{% endif %}
       </button>
     </form>
     {% elif obs.human_review_status.value != "ApprovedForAI" %}
@@ -105,7 +107,7 @@
   </div>
   {% endif %}
 
-  {% if obs.ai_analysis_status == "rejected" %}
+  {% if ai_review.get("decision") == "Rejected" %}
   <div class="ai-notice ai-notice-failed">
     <strong>AI draft rejected by the human reviewer.</strong>
     Re-run analysis only after checking the images, notes, and reason for rejection.
@@ -118,6 +120,16 @@
   {# ── Result fields (complete or mock) ────────────────────────────────────────── #}
   {% if obs.ai_analysis_status in ["complete", "mock"] %}
   <dl class="meta ai-fields">
+    {% if ai_result_v2 %}
+    <dt>Schema</dt>
+    <dd>v{{ ai_result_v2.schema_version }}</dd>
+    <dt>Evidence sufficiency</dt>
+    <dd>{{ ai_result_v2.evidence_sufficiency }}</dd>
+    {% if ai_result_v2.insufficient_reason %}
+    <dt>Insufficient evidence reason</dt>
+    <dd>{{ ai_result_v2.insufficient_reason }}</dd>
+    {% endif %}
+    {% endif %}
 
     <dt>AI Provider</dt>
     <dd>
@@ -150,7 +162,9 @@
     </dd>
 
     <dt>Suggested severity</dt>
-    <dd>{{ ai_severity }} / 5</dd>
+    <dd>
+      {% if ai_severity is not none %}{{ ai_severity }} / 5{% else %}Not available{% endif %}
+    </dd>
 
     <dt>AI Summary</dt>
     <dd>{{ obs.ai_summary or "Not available" }}</dd>
@@ -163,6 +177,26 @@
 
   </dl>
 
+  {% if ai_indicators %}
+  <h3>Proposed Indicators</h3>
+  <div class="indicator-list">
+    {% for indicator in ai_indicators %}
+    <article class="indicator-card">
+      <strong>{{ TAG_LABELS.get(indicator.indicator_type, indicator.indicator_type) }}</strong>
+      <dl class="meta">
+        <dt>Evidence location</dt><dd>{{ indicator.evidence_location }}</dd>
+        <dt>Image references</dt><dd>{{ indicator.image_refs | join(", ") }}</dd>
+        <dt>Confidence</dt><dd>{{ "%.0f"|format(indicator.confidence * 100) }}%</dd>
+        <dt>Visible evidence</dt><dd>{{ indicator.supporting_evidence }}</dd>
+        <dt>Severity contribution</dt><dd>{{ indicator.severity_contribution }} / 5</dd>
+      </dl>
+    </article>
+    {% endfor %}
+  </div>
+  {% elif ai_result_v2 and ai_result_v2.evidence_sufficiency == "insufficient" %}
+  <p class="empty">No visible indicators were proposed by the AI.</p>
+  {% endif %}
+
   {# ── Raw JSON response (collapsed) ─────────────────────────────────────────── #}
   {% if obs.ai_raw_response %}
   <details class="raw-response">
@@ -171,7 +205,7 @@
   </details>
   {% endif %}
 
-  {% elif obs.ai_analysis_status not in ["failed", "rejected"] %}
+  {% elif obs.ai_analysis_status != "failed" %}
   <p class="empty">
     {% if obs.human_review_status.value == "ApprovedForAI" %}
     Click <strong>Analyze All Images</strong> to analyse this observation.<br />
@@ -189,7 +223,7 @@
 {% if obs.risk_case %}
 <p>Risk case: <a href="/cases/{{ obs.risk_case.id }}">#{{ obs.risk_case.id }}</a>
   — {{ obs.risk_case.status }}</p>
-{% elif obs.ai_summary and obs.ai_analysis_status in ["complete", "mock"] %}
+{% elif obs.ai_summary and obs.ai_analysis_status in ["complete", "mock"] and ai_review.get("decision") != "Rejected" %}
 <a class="btn-primary" href="/observations/{{ obs.id }}/ai_review">Review AI Output</a>
 {% elif obs.human_review_status.value == "Pending" %}
 <a class="btn-primary" href="/observations/{{ obs.id }}/review">Review Submission</a>

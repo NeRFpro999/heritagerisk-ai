@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_csrf.html" import csrf_input %}
 {% block title %}Review Observation #{{ obs.id }} - HeritageRisk AI{% endblock %}
 
 {% block content %}
@@ -18,22 +19,17 @@
 
 <div class="review-action-layout">
   <section class="card">
-    <h2>Submitted Evidence</h2>
+    <h2>Contributor Original</h2>
+    {% if contributor_original %}
     <dl class="meta">
       <dt>Site</dt>
       <dd>{{ site.name }}</dd>
-      <dt>Status</dt>
-      <dd>
-        <span class="review-status review-status-{{ obs.human_review_status.value | lower }}">
-          {{ obs.human_review_status.value }}
-        </span>
-      </dd>
       <dt>Notes</dt>
-      <dd>{{ obs.notes or "No notes provided." }}</dd>
-      <dt>Submitted tags</dt>
+      <dd>{{ contributor_original.notes or "No notes provided." }}</dd>
+      <dt>Tags</dt>
       <dd>
-        {% if obs.tags_list %}
-          {% for tag in obs.tags_list %}
+        {% if contributor_original.tags %}
+          {% for tag in contributor_original.tags %}
           <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
           {% endfor %}
         {% else %}
@@ -41,8 +37,15 @@
         {% endif %}
       </dd>
       <dt>Severity</dt>
-      <dd>{{ obs.severity }} / 5</dd>
+      <dd>{{ contributor_original.severity }} / 5</dd>
+      <dt>Submitted at</dt>
+      <dd>{{ contributor_original.submitted_at }}</dd>
     </dl>
+    {% else %}
+    <p class="empty">
+      Original contributor values are unavailable for this pre-provenance record.
+    </p>
+    {% endif %}
 
     {% if obs.images %}
     <div class="review-image-grid" aria-label="Submitted observation images">
@@ -58,7 +61,13 @@
   <form class="form-card review-action-form"
         method="post"
         action="/observations/{{ obs.id }}/review">
-    <h2>Reviewer Decision</h2>
+    {{ csrf_input(request) }}
+    <h2>Current Reviewed Values</h2>
+
+    <p class="muted">
+      These editable fields are the current working copy. The contributor
+      original shown beside them will not be changed.
+    </p>
 
     <label for="human_review_status">Human review status <span class="required">*</span></label>
     <select id="human_review_status" name="human_review_status" required>

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_csrf.html" import csrf_input %}
 {% block title %}Add Site — HeritageRisk AI{% endblock %}
 
 {% block content %}
@@ -14,6 +15,7 @@
       method="post"
       action="/sites"
       enctype="multipart/form-data">
+  {{ csrf_input(request) }}
   <div class="form-note form-note-safety">
     <strong>Safety first.</strong>
     Upload only photos taken safely from public or permitted areas. Do not enter unsafe areas, climb, touch, clean, repair, or disturb heritage material.

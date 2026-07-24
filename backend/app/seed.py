@@ -7,14 +7,21 @@ Idempotent: skips records that already exist. Safe to run multiple times.
   Memorial Statue      — graffiti + other, sev 2                 → score 10 → Low,    Routed
 """
 
-from datetime import datetime, timedelta
+import json
+from datetime import datetime, timedelta, timezone
 
-from app.database import SessionLocal, engine, Base
+from app.database import (
+    Base,
+    SessionLocal,
+    apply_sqlite_startup_migrations,
+    engine,
+)
 from app.models import HumanReviewStatus, Site, Observation, RiskCase
-from app.risk import calculate_risk
+from app.provenance import build_case_snapshot, build_contributor_original
 from app.reports import generate_report
 
 Base.metadata.create_all(bind=engine)
+apply_sqlite_startup_migrations(engine)
 
 SEED_SITES = [
     {
@@ -142,7 +149,7 @@ SEED_OBSERVATIONS = [
 ]
 
 
-def seed(db=None) -> dict:
+def seed(db=None, reviewer_username: str | None = None) -> dict:
     """
     Insert demo data. Returns a summary dict.
     If db is None, opens its own session.
@@ -192,6 +199,12 @@ def seed(db=None) -> dict:
                 continue
 
             obs_age = timedelta(days=10 - i * 2)
+            submitted_at = datetime.utcnow() - obs_age
+            original_tags = [
+                tag.strip()
+                for tag in o_data["damage_tags"].split(",")
+                if tag.strip()
+            ]
             obs = Observation(
                 site_id=site.id,
                 notes=o_data["notes"],
@@ -203,31 +216,68 @@ def seed(db=None) -> dict:
                 ai_confidence=o_data["ai_confidence"],
                 ai_provider=o_data["ai_provider"],
                 ai_recommended_action=o_data["ai_recommended_action"],
-                created_at=datetime.utcnow() - obs_age,
+                ai_raw_response=json.dumps(
+                    {
+                        "damage_tags": original_tags,
+                        "severity": o_data["severity"],
+                        "confidence": o_data["ai_confidence"],
+                        "summary": o_data["ai_summary"],
+                        "recommended_action": o_data["ai_recommended_action"],
+                        "uncertainty": (
+                            "Mock output requires human verification against "
+                            "the submitted evidence."
+                        ),
+                    }
+                ),
+                created_at=submitted_at,
+                contributor_original=build_contributor_original(
+                    notes=o_data["notes"],
+                    tags=original_tags,
+                    severity=o_data["severity"],
+                    submitted_at=submitted_at,
+                ),
+                reviewed_by=reviewer_username,
             )
             db.add(obs)
             db.flush()
             obs_created += 1
 
-            score, band = calculate_risk(
-                [t.strip() for t in o_data["damage_tags"].split(",") if t.strip()],
-                o_data["severity"],
-            )
             case_data = o_data["case"]
             case_age = obs_age - timedelta(days=1)
+            reviewed_at = (
+                datetime.now(timezone.utc) - case_age
+            ).isoformat()
+            review = {
+                "decision": "Accepted",
+                "reviewer_notes": "Seeded demonstration case.",
+                "reviewed_at": reviewed_at,
+                "reviewed_by": reviewer_username,
+            }
+            obs.ai_review_decision = review
+            snapshot = build_case_snapshot(
+                observation=obs,
+                final_tags=original_tags,
+                final_severity=o_data["severity"],
+                final_summary=o_data["ai_summary"],
+                final_recommended_action=o_data["ai_recommended_action"],
+                reviewer_decision=review,
+                finalized_by=reviewer_username,
+            )
             case = RiskCase(
                 observation_id=obs.id,
-                risk_score=score,
-                risk_band=band,
+                risk_score=snapshot["capped_score"],
+                risk_band=snapshot["band"],
                 status=case_data["status"],
                 routed_to=case_data.get("routed_to"),
+                final_snapshot=snapshot,
+                finalized_by=reviewer_username,
                 created_at=datetime.utcnow() - case_age,
                 updated_at=datetime.utcnow() - case_age,
             )
             db.add(case)
             db.flush()
 
-            report_path = generate_report(case, obs, site)
+            report_path = generate_report(case)
             case.report_path = report_path
             cases_created += 1
 

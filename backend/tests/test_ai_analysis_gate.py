@@ -6,6 +6,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from tests.auth_helpers import (
+    TEST_REVIEWER_USERNAME,
+    configure_test_reviewer,
+    login_reviewer,
+    post_form,
+    restore_test_reviewer,
+)
+
 
 @pytest.fixture()
 def ai_gate_context():
@@ -60,6 +68,7 @@ def ai_gate_context():
         damage_tags="water_staining",
         severity=3,
         human_review_status=HumanReviewStatus.APPROVED_FOR_AI,
+        reviewed_by=TEST_REVIEWER_USERNAME,
         created_at=now,
     )
     db.add_all([pending_observation, approved_observation])
@@ -78,7 +87,9 @@ def ai_gate_context():
     )
     db.commit()
 
+    reviewer_settings = configure_test_reviewer()
     client = TestClient(app, raise_server_exceptions=True)
+    login_reviewer(client)
 
     yield {
         "client": client,
@@ -88,6 +99,7 @@ def ai_gate_context():
     }
 
     db.close()
+    restore_test_reviewer(reviewer_settings)
     app.dependency_overrides.pop(get_db, None)
     connection.close()
 
@@ -96,7 +108,10 @@ def test_pending_observation_ai_analysis_returns_403(ai_gate_context):
     pending_id = ai_gate_context["pending_observation_id"]
 
     with patch("app.main.analyze_observation_images") as analyze_mock:
-        response = ai_gate_context["client"].post(f"/observations/{pending_id}/analyze")
+        response = post_form(
+            ai_gate_context["client"],
+            f"/observations/{pending_id}/analyze",
+        )
 
     assert response.status_code == 403
     assert response.json()["detail"] == (
@@ -124,7 +139,8 @@ def test_approved_observation_ai_analysis_proceeds(ai_gate_context):
         "app.main.analyze_observation_images",
         return_value=analysis_result,
     ) as analyze_mock:
-        response = ai_gate_context["client"].post(
+        response = post_form(
+            ai_gate_context["client"],
             f"/observations/{approved_id}/analyze",
             follow_redirects=False,
         )

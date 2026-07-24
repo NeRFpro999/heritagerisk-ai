@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_csrf.html" import csrf_input %}
 {% block title %}Submit Observation - HeritageRisk AI{% endblock %}
 
 {% block content %}
@@ -154,6 +155,7 @@
         action="/observations/submit"
         enctype="multipart/form-data"
         data-submit-form>
+    {{ csrf_input(request) }}
     <input type="hidden" name="response_mode" value="html" />
 
     <section class="public-submit-section">

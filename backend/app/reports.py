@@ -1,17 +1,16 @@
-"""
-Generates a Markdown evidence report for a RiskCase and saves it to reports/.
-Returns the absolute file path as a string.
-"""
+"""Generate immutable-snapshot Markdown evidence reports for RiskCases."""
 
-import json
-from datetime import datetime, timezone
+from datetime import datetime
+import os
 from pathlib import Path
 
-from app.risk import calculate_risk_breakdown
+from app.provenance import case_snapshot
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REPORTS_DIR = REPO_ROOT / "reports"
-REPORTS_DIR.mkdir(exist_ok=True)
+REPORTS_DIR = Path(os.environ.get("HERITAGERISK_REPORTS_DIR", REPO_ROOT / "reports"))
+if not REPORTS_DIR.is_absolute():
+    REPORTS_DIR = REPO_ROOT / REPORTS_DIR
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 SAFETY_ETHICS_NOTE = (
     "HeritageRisk AI is for visible risk triage only. It does not replace "
@@ -28,239 +27,335 @@ FINAL_SAFETY_CLAUSE = (
 def _safe(value, fallback: str = "Not provided") -> str:
     if value is None:
         return fallback
-    s = str(value).strip()
-    return s if s else fallback
+    text = str(value).strip()
+    return text if text else fallback
 
 
-def _ai_summary_line(observation) -> str:
-    """Build the AI/manual analysis line for the report."""
-    status = _safe(getattr(observation, "ai_analysis_status", None), "not_run")
-    summary = getattr(observation, "ai_summary", None)
+def _format_timestamp(value) -> str:
+    if not value:
+        return "Not available"
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return _safe(value, "Not available")
+    return parsed.strftime("%Y-%m-%d %H:%M UTC")
 
-    if status == "not_run":
-        return "No AI analysis has been run for this observation."
+
+def _images_markdown(
+    image_urls: list[str],
+    fallback: str = "No image uploaded.",
+) -> str:
+    if not image_urls:
+        return fallback
+    return "\n".join(
+        f"![Observation image {index}]({image_url})"
+        for index, image_url in enumerate(image_urls, start=1)
+    )
+
+
+def _ai_summary_line(ai_proposal: dict) -> str:
+    status = _safe(ai_proposal.get("analysis_status"), "not_run")
+    summary = ai_proposal.get("summary")
     if status == "failed":
         return "AI analysis was attempted but failed. Human review required."
-    if not summary:
+    if status == "not_run" or not summary:
         return "No AI analysis has been run for this observation."
     if status == "mock":
         return (
             "Mock analysis used because Azure AI is disabled or unavailable. "
             f"{summary}"
         )
-    # status == "complete"
-    return summary
+    return str(summary)
 
 
-def _confidence_line(observation) -> str:
-    confidence = getattr(observation, "ai_confidence", None)
-    status = _safe(getattr(observation, "ai_analysis_status", None), "not_run")
+def _confidence_line(ai_proposal: dict) -> str:
+    confidence = ai_proposal.get("confidence")
+    status = ai_proposal.get("analysis_status")
     if confidence is None or status in ("not_run", "failed"):
         return "Not available"
     return f"{confidence} / 100"
 
 
-def _normalise_image_url(raw_url: str | None) -> str | None:
-    if not raw_url:
-        return None
-    if raw_url.startswith(("/", "http://", "https://")):
-        return raw_url
-    return f"/uploads/{raw_url}"
-
-
-def _image_urls(observation) -> list[str]:
-    images = getattr(observation, "images", None) or []
-    urls: list[str] = []
-    if images:
-        for image in images:
-            image_url = _normalise_image_url(getattr(image, "image_url", None))
-            if image_url:
-                urls.append(image_url)
-        if urls:
-            return urls
-
-    primary_url = _normalise_image_url(getattr(observation, "primary_image_url", None))
-    if primary_url:
-        return [primary_url]
-
-    legacy_filename = getattr(observation, "image_filename", None)
-    if legacy_filename:
-        return [f"/uploads/{legacy_filename}"]
-
-    return []
-
-
-def _images_markdown(observation) -> str:
-    urls = _image_urls(observation)
-    if not urls:
-        return "No image uploaded."
-
-    return "\n".join(
-        f"![Observation image {index}]({image_url})"
-        for index, image_url in enumerate(urls, start=1)
-    )
-
-
-def _human_review_status_value(observation) -> str:
-    status = getattr(observation, "human_review_status", None)
-    if status is None:
-        return "Not recorded"
-    return _safe(getattr(status, "value", status))
-
-
-def _ai_provider_label(observation) -> str:
-    status = _safe(getattr(observation, "ai_analysis_status", None), "not_run")
-    provider = _safe(getattr(observation, "ai_provider", None), "")
+def _ai_provider_label(ai_proposal: dict) -> str:
+    status = _safe(ai_proposal.get("analysis_status"), "not_run")
+    provider = _safe(ai_proposal.get("provider"), "")
     if status == "mock" or provider == "mock":
         return "Mock Fallback"
     if status == "complete":
         return "Azure OpenAI Vision"
-    if provider:
-        return provider
-    return "Not available"
+    return provider or "Not available"
 
 
-def _ai_raw_data(observation) -> dict:
-    raw_response = getattr(observation, "ai_raw_response", None)
-    if not raw_response:
-        return {}
-    try:
-        data = json.loads(raw_response)
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _ai_uncertainty_line(observation) -> str:
-    uncertainty = _ai_raw_data(observation).get("uncertainty")
-    if isinstance(uncertainty, str) and uncertainty.strip():
-        return uncertainty.strip()
-    return "Not separately provided; use the confidence score and original images."
-
-
-def _ai_review_data(observation) -> dict:
-    review = _ai_raw_data(observation).get("human_ai_review", {})
-    return review if isinstance(review, dict) else {}
-
-
-def _risk_equation_line(breakdown: dict) -> str:
-    weights = [str(item["weight"]) for item in breakdown["tag_weights"]]
-    left_side = " + ".join(weights) if weights else "0"
-    equation = (
-        f"({left_side}) × Severity {breakdown['severity']} = "
-        f"{breakdown['raw_score']}"
+def _case_events(case) -> list:
+    events = list(getattr(case, "events", None) or [])
+    return sorted(
+        events,
+        key=lambda event: getattr(event, "created_at", None) or datetime.min,
     )
-    if breakdown["capped"]:
-        equation += " → 100 (capped)"
-    return equation
 
 
-def generate_report(case, observation, site) -> str:
-    """Write reports/case_<id>.md and return the absolute path."""
-    tags_list = getattr(observation, "tags_list", None) or []
-    tags = ", ".join(tags_list) if tags_list else "None recorded"
-    image_markdown = _images_markdown(observation)
-    human_review_status = _human_review_status_value(observation)
-    reviewed_before_ai = human_review_status == "ApprovedForAI"
-    risk_breakdown = calculate_risk_breakdown(
-        tags_list,
-        int(getattr(observation, "severity", 1) or 1),
+def _case_event_lines(case) -> str:
+    lines = []
+    for event in _case_events(case):
+        timestamp = _format_timestamp(getattr(event, "created_at", None))
+        note = _safe(getattr(event, "note", None), "No note")
+        lines.append(
+            "* "
+            f"{timestamp}: {_safe(getattr(event, 'from_status', None))} -> "
+            f"{_safe(getattr(event, 'to_status', None))} by "
+            f"{_safe(getattr(event, 'reviewer', None), 'Not available')}. "
+            f"Note: {note}."
+        )
+    if not lines:
+        return "* No status transitions have been recorded for this case."
+    return "\n".join(lines)
+
+
+def _indicator_lines(ai_proposal: dict) -> str:
+    indicators = ai_proposal.get("indicators")
+    if not isinstance(indicators, list) or not indicators:
+        return "* No proposed indicators recorded."
+    lines = []
+    for indicator in indicators:
+        if not isinstance(indicator, dict):
+            continue
+        image_refs = indicator.get("image_refs") or []
+        if isinstance(image_refs, list):
+            refs = ", ".join(str(ref) for ref in image_refs) or "Not available"
+        else:
+            refs = "Not available"
+        confidence = indicator.get("confidence")
+        confidence_text = (
+            f"{round(confidence * 100)}%"
+            if isinstance(confidence, (int, float))
+            else "Not available"
+        )
+        lines.append(
+            "* "
+            f"**{_safe(indicator.get('indicator_type'))}** at "
+            f"{_safe(indicator.get('evidence_location'))}; "
+            f"images {refs}; confidence {confidence_text}; "
+            f"severity contribution {_safe(indicator.get('severity_contribution'))}/5. "
+            f"Evidence: {_safe(indicator.get('supporting_evidence'))}."
+        )
+    return "\n".join(lines) if lines else "* No proposed indicators recorded."
+
+
+def generate_report(case) -> str:
+    """Write reports/case_<id>.md using only the stored case snapshot."""
+    snapshot = case_snapshot(case)
+    original = snapshot.get("contributor_original") or {}
+    original_available = bool(snapshot.get("contributor_original"))
+    reviewed = snapshot.get("current_reviewed") or {}
+    ai_proposal = snapshot.get("ai_proposal") or {}
+    review = snapshot.get("reviewer_decision") or {}
+    site = snapshot.get("site") or {}
+    legacy_snapshot = snapshot.get("snapshot_source") == "legacy_unavailable"
+
+    final_tags = snapshot.get("final_tags") or []
+    tags = ", ".join(final_tags) if final_tags else (
+        "Not available" if legacy_snapshot else "None recorded"
     )
+    original_tags = ", ".join(original.get("tags") or []) or (
+        "None recorded" if original_available else "Not available"
+    )
+    ai_tags = ", ".join(ai_proposal.get("damage_tags") or []) or (
+        "Not available" if legacy_snapshot else "None suggested"
+    )
+    ai_schema_version = _safe(ai_proposal.get("schema_version"), "v1")
+    evidence_sufficiency = _safe(
+        ai_proposal.get("evidence_sufficiency"),
+        "Not recorded for v1 rows",
+    )
+    insufficient_reason = _safe(
+        ai_proposal.get("insufficient_reason"),
+        "Not provided",
+    )
+    indicator_lines = _indicator_lines(ai_proposal)
     tag_weight_lines = "\n".join(
         f"* **{item['tag']}** ({item['label']}): {item['weight']}"
-        for item in risk_breakdown["tag_weights"]
+        for item in snapshot.get("tag_weights") or []
+    ) or (
+        "* Detailed tag weights are not available for this legacy case."
+        if legacy_snapshot
+        else "* No finalized tags recorded: 0"
     )
-    if not tag_weight_lines:
-        tag_weight_lines = "* No finalized tags recorded: 0"
-
-    obs_created = getattr(observation, "created_at", None)
-    obs_datetime = (
-        obs_created.strftime("%Y-%m-%d %H:%M UTC") if obs_created else "Not available"
+    image_markdown = _images_markdown(
+        snapshot.get("image_urls") or [],
+        fallback=(
+            "Image references are not available for this legacy case."
+            if legacy_snapshot
+            else "No image uploaded."
+        ),
     )
-
-    routed_to = _safe(getattr(case, "routed_to", None), "Not routed yet")
-    recommended_action = _safe(
-        getattr(observation, "ai_recommended_action", None),
-        "No AI next step was recorded; human review is required.",
+    ai_uncertainty = _safe(
+        ai_proposal.get("uncertainty"),
+        (
+            "Not available"
+            if legacy_snapshot
+            else "Not separately provided; use the confidence score and original images."
+        ),
     )
-    ai_review = _ai_review_data(observation)
-    ai_review_decision = _safe(ai_review.get("decision"), "Accepted for Risk Case")
-    ai_review_notes = _safe(ai_review.get("reviewer_notes"), "No finalization notes.")
-    contributor_notes = _safe(
-        getattr(observation, "notes", None),
-        "No notes provided.",
+    captured_at = _format_timestamp(snapshot.get("captured_at"))
+    observation_created_at = _format_timestamp(
+        snapshot.get("observation_created_at")
     )
-    ai_analysis_status = _safe(
-        getattr(observation, "ai_analysis_status", None),
-        "not_run",
+    submitted_at = _format_timestamp(original.get("submitted_at"))
+    contributor_notes = (
+        "Preserved for reviewer audit; withheld from case reports."
+        if original_available
+        else "Not available"
     )
+    reviewed_notes = _safe(
+        reviewed.get("notes"),
+        "Not available" if legacy_snapshot else "No reviewed notes recorded.",
+    )
+    review_status = _safe(
+        reviewed.get("human_review_status"),
+        "Not available" if legacy_snapshot else "Not recorded",
+    )
+    reviewed_by = _safe(snapshot.get("reviewed_by"), "Not available")
+    finalized_by = _safe(snapshot.get("finalized_by"), "Not available")
+    decision = _safe(
+        review.get("decision"),
+        "Not available" if legacy_snapshot else "Accepted for Risk Case",
+    )
+    reviewer_notes = _safe(
+        review.get("reviewer_notes"),
+        "Not available" if legacy_snapshot else "No finalization notes.",
+    )
+    final_summary = _safe(
+        snapshot.get("final_summary"),
+        (
+            "Not available"
+            if legacy_snapshot
+            else "No final reviewed summary was recorded."
+        ),
+    )
+    final_action = _safe(
+        snapshot.get("final_recommended_action"),
+        (
+            "Not available"
+            if legacy_snapshot
+            else "No final next step was recorded; human review is required."
+        ),
+    )
+    raw_equation = _safe(snapshot.get("raw_equation"), "Not available")
+    capped_suffix = " (capped)" if snapshot.get("capped") else ""
+    thresholds = snapshot.get("thresholds") or {}
+    threshold_line = (
+        f"Low {thresholds['Low']} | Medium {thresholds['Medium']} | "
+        f"High {thresholds['High']}"
+        if thresholds
+        else "Not available"
+    )
+    legacy_notice = ""
+    if legacy_snapshot:
+        legacy_notice = (
+            "\n> Detailed provenance is unavailable because this case predates "
+            "immutable snapshots. No live Observation values were substituted.\n"
+        )
+    event_lines = _case_event_lines(case)
 
     md = f"""# HeritageRisk AI Evidence Report
 
 **Case ID:** {_safe(getattr(case, 'id', None))}
-**Generated:** {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}
-
+**Case snapshot captured:** {captured_at}
+{legacy_notice}
 ---
 
 ## 1. Site Information
 
-* **Site name:** {_safe(getattr(site, 'name', None))}
-* **Location:** {_safe(getattr(site, 'location', None))}
-* **Description:** {_safe(getattr(site, 'description', None))}
+* **Site name:** {_safe(site.get('name'), 'Not available')}
+* **Location:** {_safe(site.get('location'), 'Not provided')}
+* **Description:** {_safe(site.get('description'), 'Not provided')}
 
 ---
 
 ## 2. Observation
 
-* **Observation ID:** {_safe(getattr(observation, 'id', None))}
-* **Date/time:** {obs_datetime}
-* **Contributor notes:** {contributor_notes}
+* **Observation ID:** {_safe(snapshot.get('observation_id'))}
+* **Observation created:** {observation_created_at}
+* **Contributor-original notes:** {contributor_notes}
+* **Reviewed working notes at finalization:** {reviewed_notes}
 
-### Submitted Images
+### Submitted Images at Finalization
 
 {image_markdown}
 
 ---
 
-## 3. Visible Risk Indicators
+## 3. Three-Layer Provenance
 
-* **Damage tags:** {tags}
-* **Severity score:** {_safe(getattr(observation, 'severity', None))} / 5
-* **AI/manual analysis summary:** {_ai_summary_line(observation)}
-* **Confidence:** {_confidence_line(observation)}
-* **AI uncertainty:** {_ai_uncertainty_line(observation)}
+### Contributor Original
+
+* **Notes:** {contributor_notes}
+* **Tags:** {original_tags}
+* **Severity:** {_safe(original.get('severity'), 'Not available')} / 5
+* **Submitted at:** {_format_timestamp(original.get('submitted_at'))}
+
+### AI Proposal
+
+* **Schema version:** {ai_schema_version}
+* **Evidence sufficiency:** {evidence_sufficiency}
+* **Insufficient evidence reason:** {insufficient_reason}
+* **Suggested tags:** {ai_tags}
+* **Suggested severity:** {_safe(ai_proposal.get('severity'), 'Not available')} / 5
+* **Summary:** {'Not available' if legacy_snapshot else _ai_summary_line(ai_proposal)}
+* **Confidence:** {'Not available' if legacy_snapshot else _confidence_line(ai_proposal)}
+* **AI uncertainty:** {ai_uncertainty}
+* **Recommended next step:** {_safe(ai_proposal.get('recommended_action'), 'Not available')}
+
+#### Proposed Indicators
+
+{indicator_lines}
+
+### Reviewer-Accepted Final
+
+* **Final tags:** {tags}
+* **Final severity:** {_safe(snapshot.get('final_severity'), 'Not available')} / 5
+* **Final reviewed summary:** {final_summary}
+* **Final reviewed next step:** {final_action}
 
 ---
 
 ## 4. Human Review Audit Trail
 
-* Human Review Status: {human_review_status}
-* Reviewed before AI Analysis: {reviewed_before_ai}
-* AI Output Finalization: {ai_review_decision}
-* Reviewer Finalization Notes: {ai_review_notes}
+* **Reviewed by:** {reviewed_by}
+* **Finalized by:** {finalized_by}
+* Human Review Status at Case Finalization: {review_status}
+* AI Output Finalization: {decision}
+* Reviewer Finalization Notes: {reviewer_notes}
 
 ---
 
 ## 5. AI Audit Trail
 
 * AI summary generated by: Azure OpenAI Vision (or Mock Fallback)
-* Actual analysis provider: {_ai_provider_label(observation)}
-* AI analysis status: {ai_analysis_status}
+* Actual analysis provider: {_ai_provider_label(ai_proposal)}
+* AI analysis status: {_safe(ai_proposal.get('analysis_status'), 'Not available' if legacy_snapshot else 'not_run')}
 
 ---
 
 ## 6. Risk Case
 
-* **Risk score:** {_safe(getattr(case, 'risk_score', None))} / 100
-* **Risk band:** {_safe(getattr(case, 'risk_band', None))}
+* **Risk score:** {_safe(snapshot.get('capped_score'), 'Not available')} / 100
+* **Risk band:** {_safe(snapshot.get('band'), 'Not available')}
 * **Status:** {_safe(getattr(case, 'status', None))}
-* Final routing destination: {routed_to}
+* Final routing destination: {_safe(getattr(case, 'routed_to', None), 'Not routed yet')}
+
+### Status Event History
+
+{event_lines}
 
 ---
 
 ## 7. Recommended Next Step
 
-{recommended_action}
+{final_action}
 
 Human review is required before any action, forwarding, or routing decision.
 
@@ -274,17 +369,20 @@ Human review is required before any action, forwarding, or routing decision.
 
 ## 9. Risk Scoring Method
 
-The risk score is rule-based, not decided by AI.
+The risk score is rule-based, not decided by AI. These values were stored when
+the Risk Case was created and are not recalculated from the Observation.
 
 ### Finalized Tag Weights
 
 {tag_weight_lines}
 
-* **Severity multiplier:** {risk_breakdown['severity']}
-* **Equation:** {_risk_equation_line(risk_breakdown)}
-* **Final score:** {risk_breakdown['score']} / 100
-* **Risk band:** {risk_breakdown['band']}
-* **Band thresholds:** Low 0-29 | Medium 30-59 | High 60-100
+* **Severity multiplier:** {_safe(snapshot.get('multiplier'), 'Not available')}
+* **Raw equation:** {raw_equation}
+* **Equation:** {raw_equation}
+* **Capped score:** {_safe(snapshot.get('capped_score'), 'Not available')} / 100{capped_suffix}
+* **Final score:** {_safe(snapshot.get('capped_score'), 'Not available')} / 100
+* **Risk band:** {_safe(snapshot.get('band'), 'Not available')}
+* **Band thresholds:** {threshold_line}
 
 ---
 

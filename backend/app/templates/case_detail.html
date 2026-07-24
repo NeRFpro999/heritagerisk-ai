@@ -1,19 +1,26 @@
 {% extends "base.html" %}
+{% from "_csrf.html" import csrf_input %}
 {% block title %}Case #{{ case.id }} — HeritageRisk AI{% endblock %}
 
 {% block content %}
+{% set reviewed = snapshot.current_reviewed or {} %}
+{% set ai = snapshot.ai_proposal or {} %}
+{% set decision = snapshot.reviewer_decision or {} %}
+{% set legacy = snapshot.snapshot_source == "legacy_unavailable" %}
+{% set original_available = snapshot.contributor_original is not none %}
 
-{# ── Page header ──────────────────────────────────────────────────────────── #}
 <div class="page-header">
   <div>
     <p class="breadcrumb">
       <a href="/cases">Cases</a> /
+      {% if site.get("id") %}
       <a href="/sites/{{ site.id }}">{{ site.name }}</a> /
+      {% endif %}
       Case #{{ case.id }}
     </p>
     <h1>
       Case #{{ case.id }}
-      <span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span>
+      <span class="band band-{{ snapshot.band | lower }}">{{ snapshot.band }}</span>
       <span class="status-badge status-{{ case.status | lower | replace(' ', '-') }}">{{ case.status }}</span>
     </h1>
   </div>
@@ -26,193 +33,238 @@
 
 {% include "_safety_note.html" %}
 
+{% if snapshot.snapshot_source == "legacy_unavailable" %}
+<div class="ai-notice ai-notice-failed">
+  Detailed provenance is unavailable because this case predates immutable
+  snapshots. Stored score and band are shown without using live Observation values.
+</div>
+{% endif %}
+
 <div class="case-layout">
-
-  {# ── Left column: risk + status ───────────────────────────────────────────── #}
   <div class="case-left">
-
     <div class="card">
-      <h2>Risk Assessment</h2>
+      <h2>Risk Assessment Snapshot</h2>
 
-      {# Score meter #}
       <div class="score-display">
-        <span class="score-number">{{ case.risk_score }}</span>
+        <span class="score-number">{{ snapshot.capped_score }}</span>
         <span class="score-denom">/ 100</span>
       </div>
       <div class="score-bar">
-        <div class="score-bar-fill score-bar-{{ case.risk_band | lower }}"
-             style="width: {{ case.risk_score }}%"></div>
+        <div class="score-bar-fill score-bar-{{ snapshot.band | lower }}"
+             style="width: {{ snapshot.capped_score }}%"></div>
       </div>
       <p class="score-label">
-        <span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }} Risk</span>
+        <span class="band band-{{ snapshot.band | lower }}">{{ snapshot.band }} Risk</span>
       </p>
 
       <div class="risk-breakdown">
         <h3>Explainable Risk Breakdown</h3>
-
         <div class="risk-weight-list">
-          {% if risk_breakdown.tag_weights %}
-            {% for item in risk_breakdown.tag_weights %}
-            <div class="risk-weight-item">
-              <span>{{ item.label }}</span>
-              <strong>{{ item.weight }}</strong>
-            </div>
-            {% endfor %}
+          {% for item in snapshot.tag_weights %}
+          <div class="risk-weight-item">
+            <span>{{ item.label }}</span>
+            <strong>{{ item.weight }}</strong>
+          </div>
           {% else %}
-          <p class="empty">No finalized damage tags were recorded.</p>
-          {% endif %}
+          <p class="empty">
+            {% if legacy %}Detailed tag weights are not available for this legacy case.{% else %}No finalized tag weights are available.{% endif %}
+          </p>
+          {% endfor %}
         </div>
 
         <dl class="meta risk-breakdown-meta">
-          <dt>Severity multiplier</dt>
-          <dd>{{ risk_breakdown.severity }}</dd>
-          <dt>Equation</dt>
+          <dt>Final tags</dt>
           <dd>
-            ({{ risk_breakdown.tag_weights | map(attribute="weight") | join(" + ") or "0" }})
-            × Severity {{ risk_breakdown.severity }}
-            = {{ risk_breakdown.raw_score }}
-            {% if risk_breakdown.capped %}
-            → 100 (capped)
+            {% for tag in snapshot.final_tags %}
+            <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+            {% else %}{% if legacy %}Not available{% else %}None recorded{% endif %}{% endfor %}
+          </dd>
+          <dt>Severity multiplier</dt>
+          <dd>{{ snapshot.multiplier if snapshot.multiplier is not none else "Not available" }}</dd>
+          <dt>Raw equation</dt>
+          <dd>{{ snapshot.raw_equation }}</dd>
+          <dt>Capped score</dt>
+          <dd>
+            {{ snapshot.capped_score }} / 100
+            {% if snapshot.capped %}(capped){% endif %}
+          </dd>
+          <dt>Band</dt>
+          <dd>{{ snapshot.band }}</dd>
+          <dt>Band thresholds</dt>
+          <dd>
+            {% if snapshot.thresholds %}
+            Low: {{ snapshot.thresholds.Low }} ·
+            Medium: {{ snapshot.thresholds.Medium }} ·
+            High: {{ snapshot.thresholds.High }}
+            {% else %}
+            Not available
             {% endif %}
           </dd>
-          <dt>Band thresholds</dt>
-          <dd>Low: 0-29 · Medium: 30-59 · High: 60-100</dd>
         </dl>
       </div>
 
       <dl class="meta mt">
         <dt>Site</dt>
-        <dd><a href="/sites/{{ site.id }}">{{ site.name }}</a></dd>
+        <dd>
+          {% if site.get("id") %}
+          <a href="/sites/{{ site.id }}">{{ site.name or "Not available" }}</a>
+          {% else %}
+          Not available
+          {% endif %}
+        </dd>
         {% if site.location %}
-        <dt>Location</dt>
-        <dd>{{ site.location }}</dd>
+        <dt>Location</dt><dd>{{ site.location }}</dd>
         {% endif %}
-        <dt>Created</dt>
-        <dd>{{ case.created_at.strftime("%d %b %Y, %H:%M UTC") }}</dd>
-        <dt>Last updated</dt>
+        <dt>Case snapshot captured</dt>
+        <dd>{{ snapshot.captured_at }}</dd>
+        <dt>Last workflow update</dt>
         <dd>{{ case.updated_at.strftime("%d %b %Y, %H:%M UTC") }}</dd>
         {% if case.routed_to %}
-        <dt>Routed to</dt>
-        <dd>{{ case.routed_to }}</dd>
+        <dt>Routed to</dt><dd>{{ case.routed_to }}</dd>
         {% endif %}
       </dl>
     </div>
 
-    {# ── Status update form ────────────────────────────────────────────────── #}
     <div class="card">
       <h2>Update Status</h2>
       <form method="post" action="/cases/{{ case.id }}/status" class="status-form">
+        {{ csrf_input(request) }}
         <label for="status-sel">Case Status</label>
         <select id="status-sel" name="status">
-          {% for s in case.STATUSES %}
-          <option value="{{ s }}" {% if case.status == s %}selected{% endif %}>{{ s }}</option>
+          {% for status in next_statuses %}
+          <option value="{{ status }}">{{ status }}</option>
+          {% else %}
+          <option value="" disabled selected>No valid next status</option>
           {% endfor %}
         </select>
 
-        <label for="routed-to">Route to (optional)</label>
+        <label for="routed-to">Route to</label>
         <input id="routed-to" name="routed_to" type="text"
                value="{{ case.routed_to or '' }}"
-               placeholder="e.g. Historic England, Local Council" />
-
-        <button class="btn-primary" type="submit">Save Status</button>
+               placeholder="e.g. Local Council" />
+        <label for="status-note">Transition note</label>
+        <textarea id="status-note" name="status_note" rows="3"
+                  placeholder="Optional reviewer note"></textarea>
+        <button class="btn-primary" type="submit" {% if not next_statuses %}disabled{% endif %}>Save Status</button>
       </form>
 
-      {# Status workflow hint #}
       <div class="status-flow">
-        {% for s in case.STATUSES %}
-        <span class="flow-step {% if case.status == s %}flow-active{% endif %}">{{ s }}</span>
+        {% for status in case.STATUSES %}
+        <span class="flow-step {% if case.status == status %}flow-active{% endif %}">{{ status }}</span>
         {% if not loop.last %}<span class="flow-arrow">→</span>{% endif %}
         {% endfor %}
       </div>
     </div>
 
+    <div class="card">
+      <h2>Status Event History</h2>
+      <ol class="event-list">
+        {% for event in case.events %}
+        <li>
+          <strong>{{ event.from_status }} → {{ event.to_status }}</strong>
+          <span>by {{ event.reviewer }}{% if event.created_at %} at {{ event.created_at.strftime("%d %b %Y, %H:%M UTC") }}{% endif %}</span>
+          {% if event.note %}<p>{{ event.note }}</p>{% endif %}
+        </li>
+        {% else %}
+        <li>No status transitions have been recorded for this case.</li>
+        {% endfor %}
+      </ol>
+    </div>
   </div>
 
-  {# ── Right column: observation + AI ──────────────────────────────────────── #}
   <div class="case-right">
-
     <div class="card">
-      <h2>Observation</h2>
-
-      {% if obs.images | length == 1 %}
-      <img class="obs-detail-img" src="{{ obs.images[0].image_url }}" alt="Observation photo" />
-      {% elif obs.images | length > 1 %}
+      <h2>Evidence at Finalization</h2>
+      {% if snapshot.image_urls | length == 1 %}
+      <img class="obs-detail-img" src="{{ snapshot.image_urls[0] }}" alt="Observation photo" />
+      {% elif snapshot.image_urls | length > 1 %}
       <div class="obs-image-grid case-evidence-grid" aria-label="Risk case evidence images">
-        {% for image in obs.images %}
+        {% for image_url in snapshot.image_urls %}
         <figure class="obs-image-card">
-          <img class="obs-grid-image"
-               src="{{ image.image_url }}"
-               alt="Evidence image {{ loop.index }}" />
-          <figcaption>Image {{ loop.index }} of {{ obs.images | length }}</figcaption>
+          <img class="obs-grid-image" src="{{ image_url }}" alt="Evidence image {{ loop.index }}" />
+          <figcaption>Image {{ loop.index }} of {{ snapshot.image_urls | length }}</figcaption>
         </figure>
         {% endfor %}
       </div>
       {% else %}
-      <div class="obs-detail-img obs-placeholder"><span>No image uploaded</span></div>
+      <div class="obs-detail-img obs-placeholder"><span>No snapshotted image reference</span></div>
       {% endif %}
 
       <dl class="meta mt">
-        <dt>Date</dt>
-        <dd>{{ obs.created_at.strftime("%d %b %Y") }}</dd>
-        <dt>Notes</dt>
-        <dd>{{ obs.notes or "—" }}</dd>
-        <dt>Damage indicators</dt>
+        <dt>Contributor-original notes</dt>
         <dd>
-          {% if obs.tags_list %}
-            {% for tag in obs.tags_list %}
-            <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
-            {% endfor %}
-          {% else %}—{% endif %}
-        </dd>
-        <dt>Severity</dt>
-        <dd>
-          <span class="severity-pill">{{ obs.severity }} / 5</span>
-        </dd>
-      </dl>
-      <a class="btn-secondary btn-sm mt" href="/observations/{{ obs.id }}">View full observation</a>
-    </div>
-
-    {# ── AI analysis card ─────────────────────────────────────────────────── #}
-    <div class="card ai-panel">
-      <div class="ai-panel-header">
-        <h2>AI Analysis
-          {% if obs.ai_analysis_status == "complete" %}
-            <span class="ai-badge ai-badge-complete">AZURE OPENAI</span>
-          {% elif obs.ai_analysis_status == "mock" %}
-            <span class="ai-badge ai-badge-mock">MOCK</span>
-          {% elif obs.ai_analysis_status == "failed" %}
-            <span class="ai-badge ai-badge-failed">FAILED</span>
+          {% if original_available %}
+          Preserved for reviewer audit; withheld from case views.
           {% else %}
-            <span class="ai-badge ai-badge-pending">Not run</span>
+          Not available
           {% endif %}
-        </h2>
-      </div>
-
-      {% if obs.ai_analysis_status == "mock" %}
-        <div class="ai-notice ai-notice-mock">
-          Mock analysis used because Azure AI is disabled or unavailable.
-        </div>
-        <dl class="meta">
-          <dt>Summary</dt><dd>{{ obs.ai_summary }}</dd>
-          <dt>Recommendation</dt><dd>{{ obs.ai_recommended_action or "—" }}</dd>
-          <dt>Confidence</dt><dd>{{ obs.ai_confidence }}%</dd>
-        </dl>
-      {% elif obs.ai_analysis_status == "complete" %}
-        <dl class="meta">
-          <dt>Summary</dt><dd>{{ obs.ai_summary }}</dd>
-          <dt>Recommendation</dt><dd>{{ obs.ai_recommended_action or "—" }}</dd>
-          <dt>Confidence</dt><dd>{{ obs.ai_confidence }}%</dd>
-        </dl>
-      {% elif obs.ai_analysis_status == "failed" %}
-        <div class="ai-notice ai-notice-failed">
-          Analysis failed. <a href="/observations/{{ obs.id }}">Retry on the observation page.</a>
-        </div>
-      {% else %}
-        <p class="empty"><a href="/observations/{{ obs.id }}">Run AI analysis</a> on the observation page.</p>
+        </dd>
+        <dt>Current reviewed notes at finalization</dt>
+        <dd>{{ reviewed.get("notes") or ("Not available" if legacy else "No reviewed notes recorded") }}</dd>
+        <dt>Reviewer-accepted tags</dt>
+        <dd>
+          {% for tag in snapshot.final_tags %}
+          <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+          {% else %}{% if legacy %}Not available{% else %}None recorded{% endif %}{% endfor %}
+        </dd>
+        <dt>Reviewer-accepted severity</dt>
+        <dd>{{ snapshot.final_severity if snapshot.final_severity is not none else "Not available" }} / 5</dd>
+      </dl>
+      {% if snapshot.observation_id %}
+      <a class="btn-secondary btn-sm mt" href="/observations/{{ snapshot.observation_id }}">View current observation</a>
       {% endif %}
     </div>
 
-  </div>
+    <div class="card ai-panel">
+      <h2>AI Proposal</h2>
+      {% if ai.analysis_status == "mock" %}
+      <div class="ai-notice ai-notice-mock">
+        Mock analysis used because Azure AI is disabled or unavailable.
+      </div>
+      {% endif %}
+      <dl class="meta">
+        <dt>Summary</dt><dd>{{ ai.summary or "Not available" }}</dd>
+        <dt>Schema version</dt><dd>{{ ai.schema_version or "v1" }}</dd>
+        <dt>Evidence sufficiency</dt><dd>{{ ai.evidence_sufficiency or "Not recorded for v1 rows" }}</dd>
+        <dt>Suggested tags</dt>
+        <dd>
+          {% for tag in ai.damage_tags or [] %}
+          <span class="tag">{{ TAG_LABELS.get(tag, tag) }}</span>
+          {% else %}{% if legacy %}Not available{% else %}None suggested{% endif %}{% endfor %}
+        </dd>
+        <dt>Suggested severity</dt><dd>{{ ai.get("severity") if ai.get("severity") is not none else "Not available" }} / 5</dd>
+        <dt>Confidence</dt><dd>{{ ai.get("confidence") if ai.get("confidence") is not none else "Not available" }}{% if ai.get("confidence") is not none %} / 100{% endif %}</dd>
+        <dt>Recommendation</dt><dd>{{ ai.recommended_action or "Not available" }}</dd>
+      </dl>
+      {% if ai.indicators %}
+      <h3>Proposed Indicators</h3>
+      <ol class="event-list">
+        {% for indicator in ai.indicators %}
+        <li>
+          <strong>{{ TAG_LABELS.get(indicator.indicator_type, indicator.indicator_type) }}</strong>
+          at {{ indicator.evidence_location }};
+          confidence {{ "%.0f"|format(indicator.confidence * 100) }}%;
+          image ids {{ indicator.image_refs | join(", ") }}.
+          <p>{{ indicator.supporting_evidence }}</p>
+        </li>
+        {% endfor %}
+      </ol>
+      {% elif ai.evidence_sufficiency == "insufficient" %}
+      <p class="empty">No visible indicators confirmed: {{ ai.insufficient_reason or "insufficient evidence" }}</p>
+      {% endif %}
+    </div>
 
+    <div class="card">
+      <h2>Reviewer-Accepted Final</h2>
+      <dl class="meta">
+        <dt>Reviewed by</dt><dd>{{ snapshot.reviewed_by or "Not available" }}</dd>
+        <dt>Finalized by</dt><dd>{{ snapshot.finalized_by or "Not available" }}</dd>
+        <dt>Decision</dt><dd>{{ decision.decision or ("Not available" if legacy else "Not recorded") }}</dd>
+        <dt>Final summary</dt><dd>{{ snapshot.final_summary or ("Not available" if legacy else "Not recorded") }}</dd>
+        <dt>Final next step</dt><dd>{{ snapshot.final_recommended_action or ("Not available" if legacy else "Not recorded") }}</dd>
+        <dt>Reviewer notes</dt><dd>{{ decision.reviewer_notes or ("Not available" if legacy else "No finalization notes") }}</dd>
+      </dl>
+    </div>
+  </div>
 </div>
 {% endblock %}

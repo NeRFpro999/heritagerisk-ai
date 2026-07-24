@@ -31,7 +31,7 @@
   {% endif %}
 </form>
 
-{% if cases %}
+{% if case_items %}
 <div class="cases-table-wrap card">
   <table class="cases-table">
     <thead>
@@ -47,32 +47,40 @@
       </tr>
     </thead>
     <tbody>
-      {% for case in cases %}
+      {% for item in case_items %}
+      {% set case = item.case %}
+      {% set snapshot = item.snapshot %}
       <tr>
         <td><a href="/cases/{{ case.id }}">#{{ case.id }}</a></td>
         <td>
-          <a href="/sites/{{ case.observation.site.id }}">{{ case.observation.site.name }}</a>
-          {% if case.observation.site.location %}
-          <span class="location-sub">{{ case.observation.site.location }}</span>
+          {% if snapshot.site.get("id") %}
+          <a href="/sites/{{ snapshot.site.id }}">{{ snapshot.site.name or "Not available" }}</a>
+          {% else %}
+          Not available
+          {% endif %}
+          {% if snapshot.site.get("location") %}
+          <span class="location-sub">{{ snapshot.site.location }}</span>
           {% endif %}
         </td>
         <td>
           <div class="score-cell">
-            <strong>{{ case.risk_score }}</strong>
+            <strong>{{ snapshot.capped_score }}</strong>
             <div class="mini-bar">
-              <div class="mini-bar-fill mini-bar-{{ case.risk_band | lower }}"
-                   style="width:{{ case.risk_score }}%"></div>
+              <div class="mini-bar-fill mini-bar-{{ snapshot.band | lower }}"
+                   style="width:{{ snapshot.capped_score }}%"></div>
             </div>
           </div>
         </td>
-        <td><span class="band band-{{ case.risk_band | lower }}">{{ case.risk_band }}</span></td>
+        <td><span class="band band-{{ snapshot.band | lower }}">{{ snapshot.band }}</span></td>
         <td><span class="status-badge status-{{ case.status | lower | replace(' ', '-') }}">{{ case.status }}</span></td>
         <td>
-          {% for tag in case.observation.tags_list[:3] %}
+          {% for tag in snapshot.final_tags[:3] %}
           <span class="tag tag-sm">{{ TAG_LABELS.get(tag, tag) }}</span>
+          {% else %}
+          <span class="muted">{% if snapshot.snapshot_source == "legacy_unavailable" %}Not available{% else %}None recorded{% endif %}</span>
           {% endfor %}
-          {% if case.observation.tags_list | length > 3 %}
-          <span class="tag tag-sm">+{{ case.observation.tags_list | length - 3 }}</span>
+          {% if snapshot.final_tags | length > 3 %}
+          <span class="tag tag-sm">+{{ snapshot.final_tags | length - 3 }}</span>
           {% endif %}
         </td>
         <td>{{ case.created_at.strftime("%d %b %Y") }}</td>

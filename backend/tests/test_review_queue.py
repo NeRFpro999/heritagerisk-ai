@@ -5,6 +5,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from tests.auth_helpers import (
+    TEST_REVIEWER_USERNAME,
+    configure_test_reviewer,
+    login_reviewer,
+    restore_test_reviewer,
+)
+
 
 @pytest.fixture()
 def review_client():
@@ -60,6 +67,7 @@ def review_client():
             damage_tags="erosion",
             severity=3,
             human_review_status=HumanReviewStatus.APPROVED_FOR_AI,
+            reviewed_by=TEST_REVIEWER_USERNAME,
             created_at=now - timedelta(days=1),
         ),
         Observation(
@@ -101,10 +109,13 @@ def review_client():
     db.commit()
     db.close()
 
+    reviewer_settings = configure_test_reviewer()
     client = TestClient(app, raise_server_exceptions=True)
+    login_reviewer(client)
 
     yield client
 
+    restore_test_reviewer(reviewer_settings)
     app.dependency_overrides.pop(get_db, None)
     connection.close()
 

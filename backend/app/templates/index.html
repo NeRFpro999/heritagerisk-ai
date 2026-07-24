@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_csrf.html" import csrf_input %}
 {% block title %}Dashboard — HeritageRisk AI{% endblock %}
 
 {% block content %}
@@ -23,7 +24,7 @@
       <a class="btn-secondary" href="/sites/new">Reviewer Intake</a>
       <a class="btn-secondary" href="/sites">View Sites</a>
       {% if upload_observation_site %}
-      <a class="btn-secondary" href="/sites/{{ upload_observation_site.id }}/observations/new">Upload Observation</a>
+      <a class="btn-secondary" href="/observations/submit?site_id={{ upload_observation_site.id }}">Upload Observation</a>
       {% endif %}
       <a class="btn-secondary" href="/cases">View Risk Cases</a>
       {% if observations_awaiting_review_count %}
@@ -32,6 +33,7 @@
       <a class="btn-secondary" href="/observations/review">Review Queue</a>
       {% endif %}
       <form method="post" action="/seed" style="display:inline">
+        {{ csrf_input(request) }}
         <button class="btn-outline" type="submit">Seed Demo Data</button>
       </form>
     </div>

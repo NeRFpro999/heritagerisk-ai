@@ -3,8 +3,8 @@ MVP smoke tests for HeritageRisk AI.
 
 Covers the full happy-path flow in order:
   dashboard → site list → seed → create site → site detail →
-  upload observation → observation detail → AI analyze →
-  create case → case list → case detail → update status →
+  public multi-image submission → reviewer approval → observation detail →
+  AI analyze → finalize case → case list → case detail → update status →
   HTML report → Markdown report download.
 
 Uses an in-memory SQLite DB so no real data is touched.
@@ -18,16 +18,17 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 from unittest.mock import patch
 
-# ---------------------------------------------------------------------------
-# Tiny valid 1×1 white pixel PNG — no Pillow required
-# ---------------------------------------------------------------------------
-TINY_PNG = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
-    b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+from tests.auth_helpers import (
+    TEST_REVIEWER_USERNAME,
+    configure_test_reviewer,
+    login_reviewer,
+    post_form,
+    restore_test_reviewer,
 )
+from tests.image_helpers import TINY_JPEG, TINY_PNG
 
 
 # ---------------------------------------------------------------------------
@@ -54,13 +55,12 @@ def db_and_client(tmp_path_factory):
 
     # Single shared connection keeps the in-memory DB alive across all requests
     test_engine = create_engine(
-        "sqlite:///:memory:",
+        "sqlite://",
         connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
-    # Use a single connection so all sessions share the same in-memory state
-    connection = test_engine.connect()
-    Base.metadata.create_all(bind=connection)
-    TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=connection)
+    Base.metadata.create_all(bind=test_engine)
+    TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
     # Dependency override: every request uses the shared connection's session
     def override_get_db():
@@ -78,7 +78,9 @@ def db_and_client(tmp_path_factory):
     main_module.UPLOADS_DIR = uploads_tmp
     reports_module.REPORTS_DIR = reports_tmp
 
+    reviewer_settings = configure_test_reviewer()
     client = TestClient(app, raise_server_exceptions=True)
+    login_reviewer(client)
     # A direct session for test assertions (same connection = same data)
     db = TestSessionLocal()
 
@@ -86,7 +88,8 @@ def db_and_client(tmp_path_factory):
 
     # Teardown
     db.close()
-    connection.close()
+    test_engine.dispose()
+    restore_test_reviewer(reviewer_settings)
     app.dependency_overrides.pop(get_db, None)
     main_module.UPLOADS_DIR = orig_uploads
     reports_module.REPORTS_DIR = orig_reports
@@ -135,7 +138,7 @@ def test_03_seed(db_and_client, state):
     """POST /seed should redirect (303) and eventually land on the dashboard."""
     client = db_and_client["client"]
     # Don't follow redirects — just confirm the 303 and Location header
-    r = client.post("/seed", allow_redirects=False)
+    r = post_form(client, "/seed", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/?seeded=1"
 
@@ -144,14 +147,36 @@ def test_03_seed(db_and_client, state):
     assert r2.status_code == 200
     assert "Upload Observation" in r2.text
 
+    from app.models import Observation, RiskCase
+    from app.provenance import utc_iso
+
+    db = db_and_client["db"]
+    db.expire_all()
+    seeded_observations = db.query(Observation).all()
+    seeded_cases = db.query(RiskCase).all()
+    assert seeded_observations
+    assert seeded_cases
+    for observation in seeded_observations:
+        assert observation.contributor_original == {
+            "notes": observation.notes,
+            "tags": observation.tags_list,
+            "severity": observation.severity,
+            "submitted_at": utc_iso(observation.created_at),
+        }
+    for case in seeded_cases:
+        assert case.final_snapshot["capped_score"] == case.risk_score
+        assert case.final_snapshot["band"] == case.risk_band
+        assert case.final_snapshot["site"]["name"]
+
 
 def test_04_create_site(db_and_client, state):
     """POST /sites with a site name should redirect to /sites/{id}."""
     client = db_and_client["client"]
-    r = client.post(
+    r = post_form(
+        client,
         "/sites",
         data={"name": "Test Site", "location": "Test City", "description": "A test heritage site"},
-        allow_redirects=False,
+        follow_redirects=False,
     )
     assert r.status_code == 303
     location = r.headers["location"]
@@ -172,24 +197,23 @@ def test_05_site_detail(db_and_client, state):
     assert "Test City" in r.text
     assert "A test heritage site" in r.text
     assert "Back to Dashboard" in r.text
-    assert "Upload Observation" in r.text
+    assert "Submit Observation" in r.text
     assert "Risk Cases" in r.text
     assert "Latest Risk Band" in r.text
     assert "Latest Case Status" in r.text
     assert "visible-risk triage evidence only" in r.text
 
 
-def test_05b_observation_upload_form_guidance(db_and_client, state):
-    """GET observation upload form should show safe visible-triage guidance."""
+def test_05b_public_upload_form_guidance(db_and_client, state):
+    """The public multi-image form should show safe visible-triage guidance."""
     site_id = state["site_id"]
-    r = db_and_client["client"].get(f"/sites/{site_id}/observations/new")
+    r = db_and_client["client"].get(f"/observations/submit?site_id={site_id}")
     assert r.status_code == 200
-    assert "Accepted image types: JPG, PNG, WEBP" in r.text
-    assert "Maximum image size: 10 MB" in r.text
-    assert "Describe only what you can see" in r.text
-    assert "not confirmed professional diagnoses" in r.text
-    assert "not a structural assessment" in r.text
-    assert "Only upload photos taken safely from public or permitted areas" in r.text
+    assert "Upload up to 6 JPG, PNG, or WEBP files" in r.text
+    assert "no larger than 10 MB each" in r.text
+    assert "Record visible evidence for human review" in r.text
+    assert "triage estimate for review, not a structural assessment" in r.text
+    assert "Only take photos safely from public or permitted areas" in r.text
     for label in (
         "Crack",
         "Erosion",
@@ -208,10 +232,11 @@ def test_05c_invalid_upload_type_message(db_and_client, state):
     """Unsupported image uploads should explain the accepted file types."""
     client = db_and_client["client"]
     site_id = state["site_id"]
-    r = client.post(
-        f"/sites/{site_id}/observations",
-        data={"notes": "Visible mark", "severity": "1", "damage_tags": ["other"]},
-        files={"image": ("test.gif", io.BytesIO(b"not-used"), "image/gif")},
+    r = post_form(
+        client,
+        "/observations/submit",
+        data={"site_id": str(site_id), "severity": "1"},
+        files=[("images", ("test.gif", io.BytesIO(b"not-used"), "image/gif"))],
     )
     assert r.status_code == 400
     assert r.json()["detail"] == "Unsupported image type. Accepted image types are JPG, PNG, and WEBP."
@@ -220,7 +245,8 @@ def test_05c_invalid_upload_type_message(db_and_client, state):
 def test_05d_public_submit_rejects_missing_site(db_and_client, state):
     """POST /observations/submit should return 404 for an unknown site."""
     client = db_and_client["client"]
-    r = client.post(
+    r = post_form(
+        client,
         "/observations/submit",
         data={
             "site_id": "999999",
@@ -238,7 +264,8 @@ def test_05e_public_submit_requires_image(db_and_client, state):
     """POST /observations/submit should require at least one uploaded image."""
     client = db_and_client["client"]
     site_id = state["site_id"]
-    r = client.post(
+    r = post_form(
+        client,
         "/observations/submit",
         data={
             "site_id": str(site_id),
@@ -255,7 +282,8 @@ def test_05f_public_submit_multi_image_observation(db_and_client, state):
     """POST /observations/submit should create one observation with many images."""
     client = db_and_client["client"]
     site_id = state["site_id"]
-    r = client.post(
+    r = post_form(
+        client,
         "/observations/submit",
         data={
             "site_id": str(site_id),
@@ -265,11 +293,12 @@ def test_05f_public_submit_multi_image_observation(db_and_client, state):
         },
         files=[
             ("images", ("one.png", io.BytesIO(TINY_PNG), "image/png")),
-            ("images", ("two.jpg", io.BytesIO(b"fake-jpg"), "image/jpeg")),
+            ("images", ("two.jpg", io.BytesIO(TINY_JPEG), "image/jpeg")),
         ],
     )
     assert r.status_code == 200
     payload = r.json()
+    state["obs_id"] = payload["observation_id"]
     assert payload["success"] is True
     assert payload["message"] == "Submission received."
     assert payload["site_id"] == site_id
@@ -278,6 +307,7 @@ def test_05f_public_submit_multi_image_observation(db_and_client, state):
     assert len(payload["image_urls"]) == 2
 
     from app.models import HumanReviewStatus, Observation, ObservationImage
+    from app.provenance import utc_iso
     db = db_and_client["db"]
     db.expire_all()
     obs = db.query(Observation).filter(Observation.id == payload["observation_id"]).first()
@@ -287,6 +317,12 @@ def test_05f_public_submit_multi_image_observation(db_and_client, state):
     assert obs.severity == 4
     assert obs.human_review_status == HumanReviewStatus.PENDING
     assert obs.primary_image_url.startswith("/uploads/")
+    assert obs.contributor_original == {
+        "notes": "Public notes: cracks and water staining visible.",
+        "tags": ["crack", "water_staining"],
+        "severity": 4,
+        "submitted_at": utc_iso(obs.created_at),
+    }
 
     images = (
         db.query(ObservationImage)
@@ -338,37 +374,39 @@ def test_05g_public_submit_form_renders(db_and_client, state):
     assert "Submit Observation for Review" in r.text
 
 
-def test_06_upload_observation(db_and_client, state):
-    """POST /sites/{site_id}/observations with a PNG image should redirect to /sites/{site_id}."""
+def test_06_reviewer_approves_public_observation(db_and_client, state):
+    """An authenticated reviewer should approve the Pending public submission."""
     client = db_and_client["client"]
-    site_id = state["site_id"]
+    obs_id = state["obs_id"]
 
-    # Send a multipart form with our tiny valid PNG
-    r = client.post(
-        f"/sites/{site_id}/observations",
-        data={"notes": "Some cracks visible", "severity": "3", "damage_tags": ["crack"]},
-        files={"image": ("test.png", io.BytesIO(TINY_PNG), "image/png")},
-        allow_redirects=False,
+    r = post_form(
+        client,
+        f"/observations/{obs_id}/review",
+        data={
+            "human_review_status": "ApprovedForAI",
+            "reviewer_notes": "Some cracks visible",
+            "manually_selected_tags": "crack",
+            "severity": "3",
+        },
+        follow_redirects=False,
     )
     assert r.status_code == 303
-    assert r.headers["location"] == f"/sites/{site_id}"
+    assert r.headers["location"] == f"/observations/{obs_id}"
 
-    # Retrieve the observation ID from the DB
     from app.models import HumanReviewStatus, Observation
     db = db_and_client["db"]
-    obs = (
-        db.query(Observation)
-        .filter(
-            Observation.site_id == site_id,
-            Observation.notes == "Some cracks visible",
-        )
-        .first()
-    )
+    db.expire_all()
+    obs = db.query(Observation).filter(Observation.id == obs_id).one()
     assert obs is not None
     assert obs.human_review_status == HumanReviewStatus.APPROVED_FOR_AI
-    assert len(obs.images) == 1
+    assert obs.reviewed_by == TEST_REVIEWER_USERNAME
+    assert len(obs.images) == 2
     assert obs.primary_image_url.startswith("/uploads/")
-    state["obs_id"] = obs.id
+    assert obs.contributor_original["notes"] == (
+        "Public notes: cracks and water staining visible."
+    )
+    assert obs.contributor_original["tags"] == ["crack", "water_staining"]
+    assert obs.contributor_original["severity"] == 4
 
 
 def test_07_observation_detail(db_and_client, state):
@@ -386,7 +424,11 @@ def test_08_analyze_observation(db_and_client, state):
 
     # AZURE_OPENAI_ENABLED is false by default, so the mock provider is used —
     # no Azure calls are made.
-    r = client.post(f"/observations/{obs_id}/analyze", allow_redirects=False)
+    r = post_form(
+        client,
+        f"/observations/{obs_id}/analyze",
+        follow_redirects=False,
+    )
     assert r.status_code == 303
     assert r.headers["location"] == f"/observations/{obs_id}/ai_review"
 
@@ -413,7 +455,11 @@ def test_08b_analyze_route_uses_mock_when_azure_fails(db_and_client, state):
         provider_settings.azure_openai_deployment = "gpt-5-mini"
         provider_settings.azure_openai_timeout_seconds = 30
 
-        r = client.post(f"/observations/{obs_id}/analyze", allow_redirects=False)
+        r = post_form(
+            client,
+            f"/observations/{obs_id}/analyze",
+            follow_redirects=False,
+        )
 
     assert r.status_code == 303
     assert r.headers["location"] == f"/observations/{obs_id}/ai_review"
@@ -427,17 +473,29 @@ def test_08b_analyze_route_uses_mock_when_azure_fails(db_and_client, state):
 
 
 def test_09_create_case(db_and_client, state):
-    """POST /observations/{obs_id}/create_case should create a RiskCase and redirect to /cases/{id}."""
+    """The authenticated AI-review finalization should create a RiskCase."""
     client = db_and_client["client"]
     obs_id = state["obs_id"]
 
-    r = client.post(f"/observations/{obs_id}/create_case", allow_redirects=False)
+    r = post_form(
+        client,
+        f"/observations/{obs_id}/create_risk_case",
+        data={"final_damage_tags": ["crack"], "final_severity": "3"},
+        follow_redirects=False,
+    )
     assert r.status_code == 303
     location = r.headers["location"]
     assert location.startswith("/cases/")
     case_id = int(location.split("/")[-1])
     assert case_id > 0
     state["case_id"] = case_id
+
+    from app.models import RiskCase
+
+    db = db_and_client["db"]
+    db.expire_all()
+    case = db.query(RiskCase).filter(RiskCase.id == case_id).one()
+    assert case.finalized_by == TEST_REVIEWER_USERNAME
 
 
 def test_09b_site_detail_shows_observation_case_and_report(db_and_client, state):
@@ -483,24 +541,25 @@ def test_11_case_detail(db_and_client, state):
 
 
 def test_12_update_case_status(db_and_client, state):
-    """POST /cases/{case_id}/status with status=Verified should redirect back to the case."""
+    """POST /cases/{case_id}/status with a valid transition should redirect."""
     client = db_and_client["client"]
     case_id = state["case_id"]
 
-    r = client.post(
+    r = post_form(
+        client,
         f"/cases/{case_id}/status",
-        data={"status": "Verified"},
-        allow_redirects=False,
+        data={"status": "Needs Review"},
+        follow_redirects=False,
     )
     assert r.status_code == 303
     assert r.headers["location"] == f"/cases/{case_id}"
 
-    # Confirm status was saved
-    from app.models import RiskCase
+    from app.models import CaseEvent, RiskCase
     db = db_and_client["db"]
     db.expire_all()
     case = db.query(RiskCase).filter(RiskCase.id == case_id).first()
-    assert case.status == "Verified"
+    assert case.status == "Needs Review"
+    assert db.query(CaseEvent).filter(CaseEvent.case_id == case_id).count() == 1
 
 
 def test_13_report_html(db_and_client, state):

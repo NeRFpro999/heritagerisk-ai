@@ -1,5 +1,7 @@
 import json
+import os
 import uuid
+from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -7,29 +9,64 @@ from fastapi import FastAPI, Request, Depends, Form, UploadFile, File, HTTPExcep
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy.orm import Session, joinedload, selectinload
+from starlette.middleware.sessions import SessionMiddleware
 
+from app.auth import (
+    SESSION_COOKIE_NAME,
+    SESSION_MAX_AGE_SECONDS,
+    SESSION_SECRET_KEY,
+    authenticate_reviewer,
+    csrf_cookie_middleware,
+    current_reviewer,
+    require_reviewer,
+    require_reviewer_form,
+    safe_next_path,
+    sign_in_reviewer,
+    sign_out_reviewer,
+    verify_csrf,
+)
+from app.ai_schema import validate_analysis_result, validation_error_text
+from app.case_status import (
+    allowed_next_statuses,
+    invalid_transition_message,
+)
 from app.database import apply_sqlite_startup_migrations, engine, get_db, Base
 from app.models import (
+    CaseEvent,
     HumanReviewStatus,
     Observation,
     ObservationImage,
     RiskCase,
     Site,
 )
-from app.risk import calculate_risk, calculate_risk_breakdown, ALL_TAGS, TAG_LABELS
+from app.provenance import (
+    build_case_snapshot,
+    build_contributor_original,
+    case_snapshot,
+    contributor_original,
+)
+from app.risk import ALL_TAGS, TAG_LABELS
 from app.reports import generate_report
 from app.config import settings
 from app.services.ai_analysis import (
     AIAnalysisResult,
-    analyze_observation_image,
     analyze_observation_images,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-UPLOADS_DIR = REPO_ROOT / "data" / "uploads"
+UPLOADS_DIR = Path(os.environ.get("HERITAGERISK_UPLOADS_DIR", REPO_ROOT / "data" / "uploads"))
+if not UPLOADS_DIR.is_absolute():
+    UPLOADS_DIR = REPO_ROOT / UPLOADS_DIR
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+IMAGE_FORMAT_BY_EXTENSION = {
+    ".jpg": "JPEG",
+    ".jpeg": "JPEG",
+    ".png": "PNG",
+    ".webp": "WEBP",
+}
+ALLOWED_IMAGE_EXTENSIONS = set(IMAGE_FORMAT_BY_EXTENSION)
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
 MAX_OBSERVATION_IMAGES = 6
 
@@ -40,18 +77,104 @@ Base.metadata.create_all(bind=engine)
 apply_sqlite_startup_migrations(engine)
 
 app = FastAPI(title="HeritageRisk AI", version="0.1.0")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET_KEY,
+    session_cookie=SESSION_COOKIE_NAME,
+    max_age=SESSION_MAX_AGE_SECONDS,
+    same_site="lax",
+    https_only=False,
+)
+app.middleware("http")(csrf_cookie_middleware)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 templates.env.globals["TAG_LABELS"] = TAG_LABELS
+templates.env.globals["current_reviewer"] = current_reviewer
 
 REVIEW_ACTION_STATUSES = (
     HumanReviewStatus.APPROVED_FOR_AI,
     HumanReviewStatus.REJECTED,
     HumanReviewStatus.SENSITIVE,
 )
+
+
+def image_format_from_signature(content: bytes) -> str | None:
+    header = content[:12]
+    if header.startswith(b"\xff\xd8\xff"):
+        return "JPEG"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "PNG"
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "WEBP"
+    return None
+
+
+def sanitize_image_content(content: bytes, image_format: str) -> bytes:
+    try:
+        with Image.open(BytesIO(content)) as candidate:
+            if candidate.format != image_format:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Image content does not match its file extension.",
+                )
+            candidate.verify()
+
+        with Image.open(BytesIO(content)) as source:
+            source.load()
+            oriented = ImageOps.exif_transpose(source)
+            oriented.load()
+
+            has_alpha = "A" in oriented.getbands() or "transparency" in source.info
+            if image_format == "JPEG" and oriented.mode in {"L", "RGB", "CMYK"}:
+                pixel_mode = oriented.mode
+            elif image_format == "PNG" and oriented.mode in {
+                "1",
+                "L",
+                "LA",
+                "I",
+                "I;16",
+                "RGB",
+                "RGBA",
+            }:
+                pixel_mode = oriented.mode
+            else:
+                pixel_mode = "RGBA" if image_format != "JPEG" and has_alpha else "RGB"
+
+            pixels = (
+                oriented
+                if oriented.mode == pixel_mode
+                else oriented.convert(pixel_mode)
+            )
+            clean_image = Image.frombytes(
+                pixels.mode,
+                pixels.size,
+                pixels.tobytes(),
+            )
+
+            output = BytesIO()
+            save_options: dict[str, int | bool] = {}
+            if image_format == "JPEG":
+                save_options = {"quality": 95, "subsampling": 0, "optimize": True}
+            elif image_format == "WEBP":
+                save_options = {"quality": 95}
+            clean_image.save(output, format=image_format, **save_options)
+            return output.getvalue()
+    except HTTPException:
+        raise
+    except (
+        Image.DecompressionBombError,
+        UnidentifiedImageError,
+        OSError,
+        SyntaxError,
+        ValueError,
+    ) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is not a valid JPG, PNG, or WEBP image.",
+        ) from exc
 
 
 async def save_upload_image(image: UploadFile) -> tuple[str, Path]:
@@ -65,15 +188,29 @@ async def save_upload_image(image: UploadFile) -> tuple[str, Path]:
             ),
         )
 
-    content = await image.read()
+    content = await image.read(MAX_IMAGE_SIZE_BYTES + 1)
     if not content:
         raise HTTPException(status_code=400, detail="Uploaded image cannot be empty.")
     if len(content) > MAX_IMAGE_SIZE_BYTES:
         raise HTTPException(status_code=400, detail="Image must be 10 MB or smaller.")
 
+    expected_format = IMAGE_FORMAT_BY_EXTENSION[ext]
+    detected_format = image_format_from_signature(content)
+    if detected_format is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is not a valid JPG, PNG, or WEBP image.",
+        )
+    if detected_format != expected_format:
+        raise HTTPException(
+            status_code=400,
+            detail="Image content does not match its file extension.",
+        )
+
+    sanitized_content = sanitize_image_content(content, expected_format)
     unique_name = f"{uuid.uuid4().hex}{ext}"
     saved_path = UPLOADS_DIR / unique_name
-    saved_path.write_bytes(content)
+    saved_path.write_bytes(sanitized_content)
     return f"/uploads/{unique_name}", saved_path
 
 
@@ -121,7 +258,29 @@ def ai_raw_data(observation: Observation) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def ai_schema_v2_data(observation: Observation) -> dict | None:
+    data = ai_raw_data(observation)
+    if data.get("schema_version") != "2" or data.get("validation_status") == "failed":
+        return None
+    try:
+        return validate_analysis_result(data).model_dump()
+    except Exception:
+        return None
+
+
+def ai_v2_indicators(observation: Observation) -> list[dict]:
+    result = ai_schema_v2_data(observation)
+    return result.get("indicators", []) if result else []
+
+
 def extract_ai_damage_tags(observation: Observation) -> list[str]:
+    indicators = ai_v2_indicators(observation)
+    if indicators:
+        return [
+            indicator["indicator_type"]
+            for indicator in indicators
+            if indicator.get("indicator_type") in ALL_TAGS
+        ]
     raw_tags = ai_raw_data(observation).get("damage_tags", [])
     if not isinstance(raw_tags, list):
         return []
@@ -132,15 +291,30 @@ def extract_ai_damage_tags(observation: Observation) -> list[str]:
     ]
 
 
-def extract_ai_severity(observation: Observation) -> int:
+def extract_ai_severity(observation: Observation) -> int | None:
+    indicators = ai_v2_indicators(observation)
+    if indicators:
+        return max(
+            int(indicator["severity_contribution"])
+            for indicator in indicators
+        )
+    v2 = ai_schema_v2_data(observation)
+    if v2 and v2.get("evidence_sufficiency") == "insufficient":
+        return 1
     raw_severity = ai_raw_data(observation).get("severity")
     try:
         return max(1, min(5, int(raw_severity)))
     except (TypeError, ValueError):
-        return observation.severity
+        return None
 
 
 def extract_ai_uncertainty(observation: Observation) -> str:
+    v2 = ai_schema_v2_data(observation)
+    if v2:
+        if v2.get("evidence_sufficiency") == "insufficient":
+            return v2.get("insufficient_reason") or "Evidence was insufficient."
+        return f"Evidence sufficiency: {v2.get('evidence_sufficiency')}."
+
     uncertainty = ai_raw_data(observation).get("uncertainty")
     if isinstance(uncertainty, str) and uncertainty.strip():
         return uncertainty.strip()
@@ -159,8 +333,31 @@ def extract_ai_uncertainty(observation: Observation) -> str:
 
 
 def extract_ai_review(observation: Observation) -> dict:
+    review = observation.ai_review_decision
+    if isinstance(review, dict) and review.get("decision"):
+        return review
+
+    # Compatibility for records finalized before reviewer decisions were separated.
     review = ai_raw_data(observation).get("human_ai_review", {})
     return review if isinstance(review, dict) else {}
+
+
+def ai_review_decision_label(
+    observation: Observation,
+    final_tags: list[str],
+    final_severity: int,
+    final_summary: str,
+    final_recommended_action: str,
+) -> str:
+    """Describe whether the human-approved final differs from the AI proposal."""
+    was_edited = (
+        final_summary != (observation.ai_summary or "")
+        or final_recommended_action
+        != (observation.ai_recommended_action or "")
+        or final_tags != extract_ai_damage_tags(observation)
+        or final_severity != extract_ai_severity(observation)
+    )
+    return "Edited and accepted" if was_edited else "Accepted"
 
 
 def ensure_observation_approved_for_ai(observation: Observation) -> None:
@@ -172,10 +369,20 @@ def ensure_observation_approved_for_ai(observation: Observation) -> None:
                 "analysis."
             ),
         )
+    if not observation.reviewed_by:
+        raise HTTPException(
+            status_code=403,
+            detail="A recorded human reviewer is required before AI analysis.",
+        )
 
 
 def ensure_observation_ready_for_case(observation: Observation) -> None:
     ensure_observation_approved_for_ai(observation)
+    if extract_ai_review(observation).get("decision") == "Rejected":
+        raise HTTPException(
+            status_code=403,
+            detail="The current AI proposal was rejected and must be re-run.",
+        )
     if (
         not observation.ai_summary
         or observation.ai_analysis_status not in ("complete", "mock")
@@ -191,23 +398,37 @@ def create_risk_case_from_observation(
     observation: Observation,
     final_tags: list[str],
     final_severity: int,
+    final_summary: str,
+    final_recommended_action: str,
+    reviewer_decision: dict,
+    finalized_by: str,
     routed_to: str | None = None,
 ) -> RiskCase:
     observation.damage_tags = ",".join(final_tags)
     observation.severity = final_severity
 
-    score, band = calculate_risk(observation.tags_list, observation.severity)
+    snapshot = build_case_snapshot(
+        observation=observation,
+        final_tags=final_tags,
+        final_severity=final_severity,
+        final_summary=final_summary,
+        final_recommended_action=final_recommended_action,
+        reviewer_decision=reviewer_decision,
+        finalized_by=finalized_by,
+    )
     case = RiskCase(
         observation_id=observation.id,
-        risk_score=score,
-        risk_band=band,
+        risk_score=snapshot["capped_score"],
+        risk_band=snapshot["band"],
         routed_to=routed_to,
+        final_snapshot=snapshot,
+        finalized_by=finalized_by,
     )
     db.add(case)
     db.commit()
     db.refresh(case)
 
-    report_path = generate_report(case, observation, observation.site)
+    report_path = generate_report(case)
     case.report_path = report_path
     db.commit()
     db.refresh(case)
@@ -232,6 +453,45 @@ def apply_ai_analysis_result(
     observation: Observation,
     result: AIAnalysisResult,
 ) -> None:
+    allowed_image_ids = {image.id for image in observation.images}
+    raw_payload = result.structured_response
+    if raw_payload is None and result.raw_response:
+        try:
+            parsed_payload = json.loads(result.raw_response)
+            raw_payload = parsed_payload if isinstance(parsed_payload, dict) else parsed_payload
+        except json.JSONDecodeError:
+            raw_payload = result.raw_response
+
+    validation_error = result.validation_error
+    validated_v2: dict | None = None
+    if validation_error is None and isinstance(raw_payload, dict) and raw_payload.get("schema_version") == "2":
+        try:
+            validated_v2 = validate_analysis_result(
+                raw_payload,
+                allowed_image_ids=allowed_image_ids,
+            ).model_dump()
+        except Exception as exc:  # noqa: BLE001
+            validation_error = validation_error_text(exc)
+
+    if validation_error is not None:
+        observation.ai_analysis_status = "failed"
+        observation.ai_summary = "AI response failed schema validation."
+        observation.ai_confidence = 0
+        observation.ai_provider = result.provider
+        observation.ai_recommended_action = (
+            "Human review required before any action is taken."
+        )
+        observation.ai_raw_response = json.dumps(
+            {
+                "schema_version": "2",
+                "validation_status": "failed",
+                "provider": result.provider,
+                "validation_error": validation_error,
+                "raw_payload": raw_payload,
+            }
+        )
+        return
+
     azure_failed = (
         result.provider == "azure_openai"
         and result.confidence == 0
@@ -250,64 +510,103 @@ def apply_ai_analysis_result(
     observation.ai_provider = result.provider
     observation.ai_recommended_action = result.recommended_action
 
-    existing_raw_data = ai_raw_data(observation)
-    review_history = existing_raw_data.get("human_ai_review_history", [])
-    if not isinstance(review_history, list):
-        review_history = []
-    previous_review = existing_raw_data.get("human_ai_review")
-    if isinstance(previous_review, dict):
-        review_history.append(previous_review)
-
-    try:
-        raw_data = json.loads(result.raw_response) if result.raw_response else {}
-    except (json.JSONDecodeError, TypeError):
-        raw_data = {}
-    if not isinstance(raw_data, dict):
-        raw_data = {}
-    raw_data.update(
-        {
-            "damage_tags": result.damage_tags,
-            "severity": max(1, min(5, result.severity)),
-            "confidence": max(0, min(100, result.confidence)),
-            "summary": result.summary,
-            "recommended_action": result.recommended_action,
-            "uncertainty": result.uncertainty,
-        }
+    previous_review = extract_ai_review(observation)
+    current_review_record = observation.ai_review_decision
+    review_history = []
+    if isinstance(current_review_record, dict):
+        stored_history = current_review_record.get("history", [])
+        if isinstance(stored_history, list):
+            review_history.extend(stored_history)
+    if previous_review.get("decision"):
+        review_history.append(
+            {
+                key: previous_review.get(key)
+                for key in (
+                    "decision",
+                    "reviewer_notes",
+                    "reviewed_at",
+                    "reviewed_by",
+                )
+            }
+        )
+    observation.ai_review_decision = (
+        {"history": review_history} if review_history else None
     )
-    if review_history:
-        raw_data["human_ai_review_history"] = review_history
-    observation.ai_raw_response = json.dumps(raw_data)
+
+    if validated_v2 is not None:
+        validated_v2["provider"] = result.provider
+        observation.ai_raw_response = json.dumps(validated_v2)
+    else:
+        try:
+            raw_data = json.loads(result.raw_response) if result.raw_response else {}
+        except (json.JSONDecodeError, TypeError):
+            raw_data = {}
+        if not isinstance(raw_data, dict):
+            raw_data = {}
+        raw_data.update(
+            {
+                "damage_tags": result.damage_tags,
+                "severity": max(1, min(5, result.severity)),
+                "confidence": max(0, min(100, result.confidence)),
+                "summary": result.summary,
+                "recommended_action": result.recommended_action,
+                "uncertainty": result.uncertainty,
+            }
+        )
+        observation.ai_raw_response = json.dumps(raw_data)
 
 
 def record_ai_review_decision(
     observation: Observation,
     decision: str,
+    reviewer_username: str,
     reviewer_notes: str = "",
-) -> None:
-    raw_data = ai_raw_data(observation)
-    existing_review = raw_data.get("human_ai_review")
-    if isinstance(existing_review, dict):
-        history = raw_data.get("human_ai_review_history", [])
-        if not isinstance(history, list):
-            history = []
-        history.append(existing_review)
-        raw_data["human_ai_review_history"] = history
-    raw_data["human_ai_review"] = {
+) -> dict:
+    existing_record = observation.ai_review_decision
+    history = []
+    if isinstance(existing_record, dict):
+        existing_history = existing_record.get("history", [])
+        if isinstance(existing_history, list):
+            history.extend(existing_history)
+        if existing_record.get("decision"):
+            history.append(
+                {
+                    key: existing_record.get(key)
+                    for key in (
+                        "decision",
+                        "reviewer_notes",
+                        "reviewed_at",
+                        "reviewed_by",
+                    )
+                }
+            )
+
+    review = {
         "decision": decision,
         "reviewer_notes": reviewer_notes.strip(),
         "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        "reviewed_by": reviewer_username,
     }
-    observation.ai_raw_response = json.dumps(raw_data)
+    if history:
+        review["history"] = history
+    observation.ai_review_decision = review
+    return review
 
 
 def run_observation_analysis(observation: Observation, db: Session) -> None:
     ensure_observation_approved_for_ai(observation)
+    if observation.risk_case:
+        raise HTTPException(
+            status_code=400,
+            detail="AI analysis cannot be changed after a Risk Case is created.",
+        )
     image_paths = [
         image_url_to_local_path(image.image_url)
         for image in observation.images
     ]
     result = analyze_observation_images(
         image_paths=image_paths,
+        image_ids=[image.id for image in observation.images],
         notes=build_ai_intake_notes(observation.site, observation.notes),
     )
     apply_ai_analysis_result(observation, result)
@@ -354,10 +653,61 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/reviewer/login", response_class=HTMLResponse)
+def reviewer_login_form(request: Request, next: str = ""):
+    next_path = safe_next_path(next)
+    if current_reviewer(request):
+        return RedirectResponse(url=next_path, status_code=303)
+    return templates.TemplateResponse(
+        "reviewer_login.html",
+        {
+            "request": request,
+            "next_path": next_path,
+            "error": None,
+        },
+    )
+
+
+@app.post("/reviewer/login")
+async def reviewer_login(
+    request: Request,
+    _csrf: None = Depends(verify_csrf),
+    username: str = Form(...),
+    password: str = Form(...),
+    next_path: str = Form(""),
+):
+    reviewer = authenticate_reviewer(username, password)
+    if reviewer is None:
+        return templates.TemplateResponse(
+            "reviewer_login.html",
+            {
+                "request": request,
+                "next_path": safe_next_path(next_path),
+                "error": "Invalid reviewer username or password.",
+            },
+            status_code=401,
+        )
+
+    sign_in_reviewer(request, reviewer)
+    return RedirectResponse(url=safe_next_path(next_path), status_code=303)
+
+
+@app.post("/reviewer/logout")
+async def reviewer_logout(
+    request: Request,
+    _reviewer: str = Depends(require_reviewer_form),
+):
+    sign_out_reviewer(request)
+    return RedirectResponse(url="/reviewer/login", status_code=303)
+
+
 @app.post("/seed")
-def seed_data(db: Session = Depends(get_db)):
+async def seed_data(
+    reviewer: str = Depends(require_reviewer_form),
+    db: Session = Depends(get_db),
+):
     from app.seed import seed
-    seed(db)
+    seed(db, reviewer_username=reviewer)
     return RedirectResponse(url="/?seeded=1", status_code=303)
 
 
@@ -471,13 +821,17 @@ def sites_list(request: Request, db: Session = Depends(get_db)):
 
 
 @app.get("/sites/new", response_class=HTMLResponse)
-def site_new_form(request: Request):
+def site_new_form(
+    request: Request,
+    _reviewer: str = Depends(require_reviewer),
+):
     return templates.TemplateResponse("site_new.html", {"request": request})
 
 
 @app.post("/sites")
 async def site_create(
     request: Request,
+    reviewer: str = Depends(require_reviewer_form),
     name: str = Form(...),
     location: str = Form(""),
     description: str = Form(""),
@@ -510,12 +864,22 @@ async def site_create(
 
         observation = None
         if image_urls:
+            submitted_at = datetime.utcnow()
+            original_notes = intake_notes or None
             observation = Observation(
                 site_id=site.id,
-                notes=intake_notes or None,
+                notes=original_notes,
                 damage_tags="",
                 severity=1,
                 human_review_status=HumanReviewStatus.APPROVED_FOR_AI,
+                reviewed_by=reviewer,
+                created_at=submitted_at,
+                contributor_original=build_contributor_original(
+                    notes=original_notes,
+                    tags=[],
+                    severity=1,
+                    submitted_at=submitted_at,
+                ),
             )
             db.add(observation)
             db.flush()
@@ -538,6 +902,7 @@ async def site_create(
             ]
             result = analyze_observation_images(
                 image_paths=image_paths,
+                image_ids=[image.id for image in observation.images],
                 notes=build_ai_intake_notes(site, intake_notes),
             )
             apply_ai_analysis_result(observation, result)
@@ -577,66 +942,16 @@ def site_detail(site_id: int, request: Request, db: Session = Depends(get_db)):
             "site": site,
             "risk_cases": risk_cases,
             "latest_case": latest_case,
+            "ai_reviews": {
+                obs.id: extract_ai_review(obs) for obs in site.observations
+            },
         },
     )
 
 
-@app.get("/sites/{site_id}/observations/new", response_class=HTMLResponse)
-def observation_new_form(site_id: int, request: Request, db: Session = Depends(get_db)):
-    site = db.query(Site).filter(Site.id == site_id).first()
-    if not site:
-        raise HTTPException(status_code=404, detail="Site not found")
-    return templates.TemplateResponse(
-        "observation_new.html",
-        {"request": request, "site": site, "all_tags": ALL_TAGS},
-    )
-
-
-@app.post("/sites/{site_id}/observations")
-async def observation_create(
-    site_id: int,
-    notes: str = Form(""),
-    damage_tags: list[str] = Form(default=[]),
-    severity: int = Form(1),
-    image: UploadFile = File(None),
-    db: Session = Depends(get_db),
-):
-    site = db.query(Site).filter(Site.id == site_id).first()
-    if not site:
-        raise HTTPException(status_code=404, detail="Site not found")
-
-    image_url = None
-    saved_paths: list[Path] = []
-    if image and image.filename:
-        image_url, saved_path = await save_upload_image(image)
-        saved_paths.append(saved_path)
-
-    try:
-        obs = Observation(
-            site_id=site_id,
-            notes=notes or None,
-            damage_tags=",".join(damage_tags),
-            severity=max(1, min(5, severity)),
-            human_review_status=HumanReviewStatus.APPROVED_FOR_AI,
-        )
-        db.add(obs)
-        db.flush()
-
-        if image_url:
-            db.add(ObservationImage(observation_id=obs.id, image_url=image_url))
-
-        db.commit()
-        db.refresh(obs)
-    except Exception:
-        db.rollback()
-        cleanup_saved_uploads(saved_paths)
-        raise
-
-    return RedirectResponse(url=f"/sites/{site_id}", status_code=303)
-
-
 @app.post("/observations/submit")
 async def observation_submit(
+    _csrf: None = Depends(verify_csrf),
     site_id: int | None = Form(None),
     site_name: str = Form(""),
     site_location: str = Form(""),
@@ -691,12 +1006,22 @@ async def observation_submit(
             db.flush()
 
         public_review_status = HumanReviewStatus.PENDING
+        submitted_at = datetime.utcnow()
+        original_notes = contributor_notes or None
+        original_tags = [tag for tag in damage_tags.split(",") if tag]
         obs = Observation(
             site_id=site.id,
-            notes=contributor_notes or None,
+            notes=original_notes,
             damage_tags=damage_tags,
             severity=severity,
             human_review_status=public_review_status,
+            created_at=submitted_at,
+            contributor_original=build_contributor_original(
+                notes=original_notes,
+                tags=original_tags,
+                severity=severity,
+                submitted_at=submitted_at,
+            ),
         )
         db.add(obs)
         db.flush()
@@ -783,6 +1108,7 @@ def observation_submit_form(
 @app.get("/observations/review", response_class=HTMLResponse)
 def observation_review_queue(
     request: Request,
+    _reviewer: str = Depends(require_reviewer),
     status: str = HumanReviewStatus.PENDING.value,
     db: Session = Depends(get_db),
 ):
@@ -839,6 +1165,7 @@ def observation_review_queue(
 def observation_review_action_form(
     observation_id: int,
     request: Request,
+    _reviewer: str = Depends(require_reviewer),
     db: Session = Depends(get_db),
 ):
     obs = (
@@ -861,6 +1188,9 @@ def observation_review_action_form(
             "site": obs.site,
             "all_tags": ALL_TAGS,
             "review_action_statuses": REVIEW_ACTION_STATUSES,
+            "contributor_original": contributor_original(
+                obs.contributor_original
+            ),
         },
     )
 
@@ -868,6 +1198,7 @@ def observation_review_action_form(
 @app.post("/observations/{observation_id}/review")
 def observation_review_action(
     observation_id: int,
+    reviewer: str = Depends(require_reviewer_form),
     human_review_status: str = Form(...),
     reviewer_notes: str = Form(""),
     manually_selected_tags: str = Form(""),
@@ -882,8 +1213,14 @@ def observation_review_action(
     review_status = parse_review_action_status(human_review_status)
     if severity < 1 or severity > 5:
         raise HTTPException(status_code=400, detail="Severity must be between 1 and 5.")
+    if analyze_after_approval and obs.risk_case:
+        raise HTTPException(
+            status_code=400,
+            detail="AI analysis cannot be changed after a Risk Case is created.",
+        )
 
     obs.human_review_status = review_status
+    obs.reviewed_by = reviewer
     obs.notes = reviewer_notes or None
     obs.damage_tags = parse_damage_tags(manually_selected_tags or "")
     obs.severity = severity
@@ -919,12 +1256,18 @@ def observation_detail(obs_id: int, request: Request, db: Session = Depends(get_
             "ai_severity": extract_ai_severity(obs),
             "ai_uncertainty": extract_ai_uncertainty(obs),
             "ai_review": extract_ai_review(obs),
+            "ai_result_v2": ai_schema_v2_data(obs),
+            "ai_indicators": ai_v2_indicators(obs),
         },
     )
 
 
 @app.post("/observations/{obs_id}/analyze")
-def observation_analyze(obs_id: int, db: Session = Depends(get_db)):
+async def observation_analyze(
+    obs_id: int,
+    _reviewer: str = Depends(require_reviewer_form),
+    db: Session = Depends(get_db),
+):
     obs = (
         db.query(Observation)
         .options(joinedload(Observation.site), selectinload(Observation.images))
@@ -933,7 +1276,6 @@ def observation_analyze(obs_id: int, db: Session = Depends(get_db)):
     )
     if not obs:
         raise HTTPException(status_code=404, detail="Observation not found")
-    ensure_observation_approved_for_ai(obs)
     if obs.risk_case:
         raise HTTPException(
             status_code=400,
@@ -948,7 +1290,12 @@ def observation_analyze(obs_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/observations/{obs_id}/ai_review", response_class=HTMLResponse)
-def observation_ai_review(obs_id: int, request: Request, db: Session = Depends(get_db)):
+def observation_ai_review(
+    obs_id: int,
+    request: Request,
+    _reviewer: str = Depends(require_reviewer),
+    db: Session = Depends(get_db),
+):
     obs = (
         db.query(Observation)
         .options(
@@ -968,6 +1315,7 @@ def observation_ai_review(obs_id: int, request: Request, db: Session = Depends(g
         )
 
     ai_tags = extract_ai_damage_tags(obs)
+    ai_severity = extract_ai_severity(obs)
     selected_tags = set(obs.tags_list) | set(ai_tags)
     final_tags = [tag for tag in ALL_TAGS if tag in selected_tags]
     return templates.TemplateResponse(
@@ -978,9 +1326,17 @@ def observation_ai_review(obs_id: int, request: Request, db: Session = Depends(g
             "site": obs.site,
             "all_tags": ALL_TAGS,
             "ai_tags": ai_tags,
-            "ai_severity": extract_ai_severity(obs),
+            "ai_severity": ai_severity,
+            "final_severity_default": (
+                ai_severity if ai_severity is not None else obs.severity
+            ),
             "ai_uncertainty": extract_ai_uncertainty(obs),
             "final_tags": final_tags,
+            "ai_result_v2": ai_schema_v2_data(obs),
+            "ai_indicators": ai_v2_indicators(obs),
+            "contributor_original": contributor_original(
+                obs.contributor_original
+            ),
         },
     )
 
@@ -988,11 +1344,15 @@ def observation_ai_review(obs_id: int, request: Request, db: Session = Depends(g
 @app.post("/observations/{obs_id}/create_risk_case")
 def observation_create_risk_case(
     obs_id: int,
+    reviewer: str = Depends(require_reviewer_form),
     final_damage_tags: list[str] = Form(default=[]),
     final_severity: int = Form(...),
     final_ai_summary: str = Form(""),
     final_recommended_action: str = Form(""),
     reviewer_final_notes: str = Form(""),
+    indicator_action: list[str] = Form(default=[]),
+    indicator_type: list[str] = Form(default=[]),
+    indicator_severity: list[int] = Form(default=[]),
     routed_to: str = Form(""),
     db: Session = Depends(get_db),
 ):
@@ -1008,6 +1368,42 @@ def observation_create_risk_case(
     if final_severity < 1 or final_severity > 5:
         raise HTTPException(status_code=400, detail="Severity must be between 1 and 5.")
 
+    indicator_final_tags: list[str] = []
+    if indicator_action or indicator_type or indicator_severity:
+        if not (
+            len(indicator_action)
+            == len(indicator_type)
+            == len(indicator_severity)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Indicator review fields are incomplete.",
+            )
+        for action, tag, severity_value in zip(
+            indicator_action,
+            indicator_type,
+            indicator_severity,
+            strict=True,
+        ):
+            if action not in {"accept", "edit", "reject"}:
+                raise HTTPException(status_code=400, detail="Invalid indicator action.")
+            if action == "reject":
+                continue
+            if tag not in ALL_TAGS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported damage tag(s): {tag}",
+                )
+            if severity_value < 1 or severity_value > 5:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Indicator severity must be between 1 and 5.",
+                )
+            indicator_final_tags.append(tag)
+        final_damage_tags = [
+            tag for tag in ALL_TAGS if tag in set(indicator_final_tags)
+        ]
+
     invalid_tags = [tag for tag in final_damage_tags if tag not in ALL_TAGS]
     if invalid_tags:
         raise HTTPException(
@@ -1019,20 +1415,29 @@ def observation_create_risk_case(
     original_action = obs.ai_recommended_action or ""
     reviewed_summary = final_ai_summary.strip() or original_summary
     reviewed_action = final_recommended_action.strip() or original_action
-    obs.ai_summary = reviewed_summary
-    obs.ai_recommended_action = reviewed_action
-    decision = (
-        "Edited and accepted"
-        if reviewed_summary != original_summary or reviewed_action != original_action
-        else "Accepted"
+    decision = ai_review_decision_label(
+        observation=obs,
+        final_tags=final_damage_tags,
+        final_severity=final_severity,
+        final_summary=reviewed_summary,
+        final_recommended_action=reviewed_action,
     )
-    record_ai_review_decision(obs, decision, reviewer_final_notes)
+    review = record_ai_review_decision(
+        obs,
+        decision,
+        reviewer,
+        reviewer_final_notes,
+    )
 
     case = create_risk_case_from_observation(
         db=db,
         observation=obs,
         final_tags=final_damage_tags,
         final_severity=final_severity,
+        final_summary=reviewed_summary,
+        final_recommended_action=reviewed_action,
+        reviewer_decision=review,
+        finalized_by=reviewer,
         routed_to=routed_to or None,
     )
 
@@ -1042,6 +1447,7 @@ def observation_create_risk_case(
 @app.post("/observations/{obs_id}/reject_ai_analysis")
 def observation_reject_ai_analysis(
     obs_id: int,
+    reviewer: str = Depends(require_reviewer_form),
     rejection_reason: str = Form(""),
     db: Session = Depends(get_db),
 ):
@@ -1055,14 +1461,17 @@ def observation_reject_ai_analysis(
             detail="Observation already has a risk case.",
         )
 
-    record_ai_review_decision(obs, "Rejected", rejection_reason)
-    obs.ai_analysis_status = "rejected"
+    record_ai_review_decision(obs, "Rejected", reviewer, rejection_reason)
     db.commit()
     return RedirectResponse(url=f"/observations/{obs_id}", status_code=303)
 
 
 @app.post("/observations/{obs_id}/create_case")
-def observation_create_case(obs_id: int, db: Session = Depends(get_db)):
+async def observation_create_case(
+    obs_id: int,
+    reviewer: str = Depends(require_reviewer_form),
+    db: Session = Depends(get_db),
+):
     obs = db.query(Observation).filter(Observation.id == obs_id).first()
     if not obs:
         raise HTTPException(status_code=404, detail="Observation not found")
@@ -1070,11 +1479,28 @@ def observation_create_case(obs_id: int, db: Session = Depends(get_db)):
         return RedirectResponse(url=f"/cases/{obs.risk_case.id}", status_code=303)
 
     ensure_observation_ready_for_case(obs)
+    final_summary = obs.ai_summary or ""
+    final_action = obs.ai_recommended_action or ""
+    review = record_ai_review_decision(
+        obs,
+        ai_review_decision_label(
+            observation=obs,
+            final_tags=obs.tags_list,
+            final_severity=obs.severity,
+            final_summary=final_summary,
+            final_recommended_action=final_action,
+        ),
+        reviewer,
+    )
     case = create_risk_case_from_observation(
         db=db,
         observation=obs,
         final_tags=obs.tags_list,
         final_severity=obs.severity,
+        final_summary=final_summary,
+        final_recommended_action=final_action,
+        reviewer_decision=review,
+        finalized_by=reviewer,
     )
 
     return RedirectResponse(url=f"/cases/{case.id}", status_code=303)
@@ -1093,11 +1519,14 @@ def cases_list(
     if band:
         query = query.filter(RiskCase.risk_band == band)
     cases = query.order_by(RiskCase.created_at.desc()).all()
+    case_items = [
+        {"case": case, "snapshot": case_snapshot(case)} for case in cases
+    ]
     return templates.TemplateResponse(
         "cases_list.html",
         {
             "request": request,
-            "cases": cases,
+            "case_items": case_items,
             "statuses": RiskCase.STATUSES,
             "filter_status": status,
             "filter_band": band,
@@ -1107,34 +1536,53 @@ def cases_list(
 
 @app.get("/cases/{case_id}", response_class=HTMLResponse)
 def case_detail(case_id: int, request: Request, db: Session = Depends(get_db)):
-    case = db.query(RiskCase).filter(RiskCase.id == case_id).first()
+    case = (
+        db.query(RiskCase)
+        .options(selectinload(RiskCase.events))
+        .filter(RiskCase.id == case_id)
+        .first()
+    )
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    obs = case.observation
-    risk_breakdown = calculate_risk_breakdown(obs.tags_list, obs.severity)
+    snapshot = case_snapshot(case)
+    next_statuses = allowed_next_statuses(case.status)
     return templates.TemplateResponse(
         "case_detail.html",
         {
             "request": request,
             "case": case,
-            "obs": obs,
-            "site": obs.site,
-            "risk_breakdown": risk_breakdown,
+            "site": snapshot["site"],
+            "snapshot": snapshot,
+            "next_statuses": next_statuses,
         },
     )
 
 
 @app.get("/cases/{case_id}/status", response_class=HTMLResponse)
-def case_status_form(case_id: int, request: Request, db: Session = Depends(get_db)):
-    case = db.query(RiskCase).filter(RiskCase.id == case_id).first()
+def case_status_form(
+    case_id: int,
+    request: Request,
+    _reviewer: str = Depends(require_reviewer),
+    db: Session = Depends(get_db),
+):
+    case = (
+        db.query(RiskCase)
+        .options(selectinload(RiskCase.events))
+        .filter(RiskCase.id == case_id)
+        .first()
+    )
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
+    snapshot = case_snapshot(case)
+    next_statuses = allowed_next_statuses(case.status)
     return templates.TemplateResponse(
         "case_status.html",
         {
             "request": request,
             "case": case,
-            "site": case.observation.site,
+            "site": snapshot["site"],
+            "snapshot": snapshot,
+            "next_statuses": next_statuses,
         },
     )
 
@@ -1142,44 +1590,69 @@ def case_status_form(case_id: int, request: Request, db: Session = Depends(get_d
 @app.post("/cases/{case_id}/status")
 def case_update_status(
     case_id: int,
+    reviewer: str = Depends(require_reviewer_form),
     status: str = Form(...),
     routed_to: str = Form(""),
+    status_note: str = Form(""),
     db: Session = Depends(get_db),
 ):
-    case = db.query(RiskCase).filter(RiskCase.id == case_id).first()
+    case = (
+        db.query(RiskCase)
+        .options(selectinload(RiskCase.events))
+        .filter(RiskCase.id == case_id)
+        .first()
+    )
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     if status not in RiskCase.STATUSES:
         raise HTTPException(status_code=400, detail="Invalid status")
-    if status == "Routed" and not routed_to.strip():
+    next_statuses = allowed_next_statuses(case.status)
+    if status not in next_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=invalid_transition_message(case.status, status),
+        )
+
+    routing_destination = routed_to.strip()
+    if status == "Routed" and not routing_destination:
         raise HTTPException(
             status_code=400,
             detail="A routing destination is required for Routed cases.",
         )
+
+    from_status = case.status
     case.status = status
-    case.routed_to = routed_to or None
+    if status == "Routed":
+        case.routed_to = routing_destination
     case.updated_at = datetime.utcnow()
-    db.commit()
-    case.report_path = generate_report(
-        case,
-        case.observation,
-        case.observation.site,
+    db.add(
+        CaseEvent(
+            case_id=case.id,
+            from_status=from_status,
+            to_status=status,
+            reviewer=reviewer,
+            note=status_note.strip() or None,
+        )
     )
+    db.commit()
+    case.report_path = generate_report(case)
     db.commit()
     return RedirectResponse(url=f"/cases/{case_id}", status_code=303)
 
 
 @app.get("/cases/{case_id}/report", response_class=HTMLResponse)
 def case_report_html(case_id: int, request: Request, db: Session = Depends(get_db)):
-    case = db.query(RiskCase).filter(RiskCase.id == case_id).first()
+    case = (
+        db.query(RiskCase)
+        .options(selectinload(RiskCase.events))
+        .filter(RiskCase.id == case_id)
+        .first()
+    )
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    case.report_path = generate_report(
-        case,
-        case.observation,
-        case.observation.site,
-    )
+    snapshot = case_snapshot(case)
+    case.report_path = generate_report(case)
     db.commit()
 
     report_file = Path(case.report_path) if case.report_path else None
@@ -1187,23 +1660,13 @@ def case_report_html(case_id: int, request: Request, db: Session = Depends(get_d
     if report_file and report_file.exists():
         md_content = report_file.read_text(encoding="utf-8")
 
-    observation = case.observation
-    risk_breakdown = calculate_risk_breakdown(
-        observation.tags_list,
-        observation.severity,
-    )
-
     return templates.TemplateResponse(
         "case_report.html",
         {
             "request": request,
             "case": case,
-            "obs": observation,
-            "site": observation.site,
-            "risk_breakdown": risk_breakdown,
-            "ai_tags": extract_ai_damage_tags(observation),
-            "ai_severity": extract_ai_severity(observation),
-            "ai_uncertainty": extract_ai_uncertainty(observation),
+            "site": snapshot["site"],
+            "snapshot": snapshot,
             "md_content": md_content,
         },
     )
@@ -1211,14 +1674,15 @@ def case_report_html(case_id: int, request: Request, db: Session = Depends(get_d
 
 @app.get("/cases/{case_id}/report.md")
 def case_report_md(case_id: int, db: Session = Depends(get_db)):
-    case = db.query(RiskCase).filter(RiskCase.id == case_id).first()
+    case = (
+        db.query(RiskCase)
+        .options(selectinload(RiskCase.events))
+        .filter(RiskCase.id == case_id)
+        .first()
+    )
     if not case:
         raise HTTPException(status_code=404, detail="Report not found")
-    case.report_path = generate_report(
-        case,
-        case.observation,
-        case.observation.site,
-    )
+    case.report_path = generate_report(case)
     db.commit()
     report_file = Path(case.report_path)
     if not report_file.exists():
