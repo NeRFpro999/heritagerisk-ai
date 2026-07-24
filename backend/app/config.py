@@ -1,9 +1,9 @@
 """
 Application configuration — reads from environment variables.
 
-No API keys are hardcoded here. Copy .env.example to .env and fill in
-real values only when you are ready to connect to Azure OpenAI.
-The app runs fully without any of these values set.
+No credentials are hardcoded here. Public submission and offline mock analysis
+remain available without Azure settings; reviewer actions fail closed until the
+single reviewer credential is configured.
 """
 
 import os
@@ -33,6 +33,11 @@ class Settings:
     azure_openai_api_key: str = os.environ.get("AZURE_OPENAI_API_KEY", "")
     azure_openai_deployment: str = os.environ.get("AZURE_OPENAI_PRIMARY_DEPLOYMENT", "")
     azure_openai_timeout_seconds: float = _float_env("AZURE_OPENAI_TIMEOUT_SECONDS", 30)
+
+    # Reviewer authentication fails closed when either credential is absent.
+    reviewer_username: str = os.environ.get("REVIEWER_USERNAME", "")
+    reviewer_password_hash: str = os.environ.get("REVIEWER_PASSWORD_HASH", "")
+    session_secret_key: str = os.environ.get("SESSION_SECRET_KEY", "")
 
     # ── Feature flag ──────────────────────────────────────────────────────────
     # Set AZURE_OPENAI_ENABLED=true in your .env to activate real AI calls.
