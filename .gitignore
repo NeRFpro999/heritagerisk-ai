@@ -227,6 +227,9 @@ research/annotations/*
 research/raw_predictions/*
 !research/raw_predictions/.gitkeep
 research/generated_datasets/
+research/corpus/photos/
+research/corpus/raw/
+research/corpus/raw_photos/
 research/logs/private/
 research/**/*.db
 research/**/*.sqlite
@@ -234,9 +237,12 @@ research/**/*.sqlite3
 research/**/*.db-*
 
 # Local application data and generated evidence
+demo_assets/
 data/*.db
 data/*.db-*
 data/uploads/*
 !data/uploads/.gitkeep
+data/azure_verify_uploads/
 reports/case_*.md
+reports/azure_verify/
 docs/.pytest_baseline_run.txt
