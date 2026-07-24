@@ -11,10 +11,12 @@ engineering, cultural heritage, or emergency assessment.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import mimetypes
 from pathlib import Path
 
+from app.ai_schema import validate_analysis_result, validation_error_text
 from app.config import settings
 from app.services.ai_analysis import AIAnalysisResult
 
@@ -57,20 +59,66 @@ Rules:
 
 Required JSON structure (no extra keys):
 {{
-  "damage_tags": [<strings from the allowed list below>],
-  "severity": <integer 1–5, where 1 = minor, 5 = severe>,
-  "confidence": <integer 0–100>,
-  "summary": "<short description of visible risk indicators>",
-  "uncertainty": "<what is unclear, obstructed, distant, or not visible>",
-  "recommended_action": "<safe coordination action for human review>"
+  "schema_version": "2",
+  "provider": "azure:{settings.azure_openai_deployment or '<deployment>'}",
+  "overall_summary": "<short summary of visible evidence only>",
+  "evidence_sufficiency": "sufficient" | "partial" | "insufficient",
+  "indicators": [
+    {{
+      "indicator_type": "<one allowed damage tag>",
+      "evidence_location": "<free text, e.g. upper left of image 2>",
+      "image_refs": [<integer image ids provided by the user prompt>],
+      "confidence": <number from 0 to 1>,
+      "supporting_evidence": "<short quote of what is visibly present>",
+      "severity_contribution": <integer 1-5>
+    }}
+  ],
+  "insufficient_reason": "<required only when evidence_sufficiency is insufficient>"
 }}
 
 Allowed damage_tag values: crack, erosion, graffiti, corrosion,
 water_staining, vegetation_growth, surface_loss, fire_damage, other
 
-If no deterioration is visible, return an empty damage_tags list, severity 1,
-and your best confidence estimate.
+Returning zero indicators with evidence_sufficiency="insufficient" is valid and
+sometimes preferable. Use it when the images do not show enough visible evidence
+to support a specific indicator. Do not diagnose causes, hidden damage,
+structural safety, legal status, urgency, or whether a place is safe to enter.
 """
+
+PROMPT_SETTINGS = {
+    "max_completion_tokens": 600,
+    "temperature": None,
+    "schema_version": "2",
+}
+
+
+def analysis_prompt_configuration(deployment: str | None = None) -> dict:
+    """Return the frozen prompt template and generation settings for hashing."""
+    return {
+        "system_prompt": _SYSTEM_PROMPT,
+        "settings": PROMPT_SETTINGS,
+        "deployment": deployment or settings.azure_openai_deployment or "mock",
+    }
+
+
+def analysis_prompt_sha256(deployment: str | None = None) -> str:
+    prompt_material = json.dumps(
+        analysis_prompt_configuration(deployment),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(prompt_material.encode("utf-8")).hexdigest()
+
+
+def _analysis_notes_text(notes: str | None, image_ids: list[int] | None = None) -> str:
+    notes_text = (notes or "").strip() or "No observer notes provided."
+    if image_ids:
+        notes_text += (
+            "\nSubmitted image database ids in display order: "
+            + ", ".join(str(image_id) for image_id in image_ids)
+            + ". Use only these integer ids in indicator.image_refs."
+        )
+    return notes_text
 
 
 def _normalise_endpoint(endpoint: str) -> str:
@@ -104,64 +152,76 @@ def _encode_image(image_path: str) -> tuple[str, str]:
     return b64, mime_type
 
 
-def _validate_response(data: dict, deployment: str) -> AIAnalysisResult:
-    """
-    Parse the model's dict into an AIAnalysisResult.
-    Any missing or out-of-range field is replaced with a safe default
-    so the caller always gets a usable result.
-    """
-    raw_tags = data.get("damage_tags", [])
-    tags = (
-        [tag for tag in raw_tags if isinstance(tag, str) and tag in ALLOWED_TAGS]
-        if isinstance(raw_tags, list)
-        else []
+def _failed_validation_result(raw_payload, deployment: str, error: str) -> AIAnalysisResult:
+    safe_raw = json.dumps(
+        {
+            "schema_version": "2",
+            "validation_status": "failed",
+            "provider": f"azure:{deployment}",
+            "validation_error": error,
+            "raw_payload": raw_payload,
+        }
     )
-    if not tags:
-        tags = ["other"]
 
+    return AIAnalysisResult(
+        damage_tags=[],
+        severity=1,
+        confidence=0,
+        summary="Azure OpenAI returned a response that failed schema validation.",
+        recommended_action="Human review required before any action is taken.",
+        provider=f"azure:{deployment}",
+        raw_response=safe_raw,
+        uncertainty="AI response validation failed.",
+        validation_error=error,
+        structured_response=None,
+    )
+
+
+def _validate_response(
+    data: dict,
+    deployment: str,
+    image_ids: list[int] | None = None,
+) -> AIAnalysisResult:
     try:
-        severity = max(1, min(5, int(data.get("severity", 1))))
-    except (TypeError, ValueError):
-        severity = 1
+        result = validate_analysis_result(
+            data,
+            allowed_image_ids=set(image_ids or []) if image_ids is not None else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _failed_validation_result(data, deployment, validation_error_text(exc))
 
-    try:
-        confidence = max(0, min(100, int(data.get("confidence", 0))))
-    except (TypeError, ValueError):
-        confidence = 0
-
-    summary = (
-        str(data.get("summary", "")).strip()
-        or "No summary provided by the model."
+    tags = [indicator.indicator_type for indicator in result.indicators]
+    severity = max(
+        [indicator.severity_contribution for indicator in result.indicators],
+        default=1,
     )
-    uncertainty = str(data.get("uncertainty", "")).strip() or (
-        "No uncertainty statement was provided. Human verification is required."
+    confidence = int(
+        round(
+            max([indicator.confidence for indicator in result.indicators], default=0)
+            * 100
+        )
     )
-    action = (
-        str(data.get("recommended_action", "")).strip()
-        or "Human review required before any action is taken."
-    )
-
-    # Store the validated fields as raw JSON — never the original image bytes
-    safe_raw = json.dumps({
-        "damage_tags": tags,
-        "severity": severity,
-        "confidence": confidence,
-        "summary": summary,
-        "uncertainty": uncertainty,
-        "recommended_action": action,
-    })
+    safe_payload = result.model_dump()
+    safe_payload["provider"] = f"azure:{deployment}"
+    summary = result.overall_summary
+    if result.evidence_sufficiency == "insufficient":
+        summary = "No visible indicators confirmed. " + summary
 
     return AIAnalysisResult(
         damage_tags=tags,
         severity=severity,
         confidence=confidence,
         summary=summary,
-        recommended_action=action,
+        recommended_action=(
+            "HeritageRisk AI is for visible risk triage only. Human review is "
+            "required before any action."
+        ),
         provider=f"azure:{deployment}",
-        raw_response=safe_raw,
-        uncertainty=uncertainty,
+        raw_response=json.dumps(safe_payload),
+        uncertainty=result.insufficient_reason
+        or f"Evidence sufficiency: {result.evidence_sufficiency}.",
+        structured_response=safe_payload,
     )
-
 
 class AzureOpenAIImageAnalyzer:
     def __init__(self) -> None:
@@ -170,16 +230,30 @@ class AzureOpenAIImageAnalyzer:
         self.deployment = settings.azure_openai_deployment
         self.timeout_seconds = settings.azure_openai_timeout_seconds
 
-    def _validate_response(self, data: dict) -> AIAnalysisResult:
-        return _validate_response(data, self.deployment)
+    def _validate_response(
+        self,
+        data: dict,
+        image_ids: list[int] | None = None,
+    ) -> AIAnalysisResult:
+        return _validate_response(data, self.deployment, image_ids)
 
-    def analyze(self, image_path: str, notes: str | None = None) -> AIAnalysisResult:
-        return self.analyze_many([image_path], notes)
+    def analyze(
+        self,
+        image_path: str,
+        notes: str | None = None,
+        image_id: int | None = None,
+    ) -> AIAnalysisResult:
+        return self.analyze_many(
+            [image_path],
+            notes,
+            image_ids=[image_id] if image_id else None,
+        )
 
     def analyze_many(
         self,
         image_paths: list[str],
         notes: str | None = None,
+        image_ids: list[int] | None = None,
     ) -> AIAnalysisResult:
         """
         Send one or more images + notes to Azure OpenAI Vision.
@@ -213,7 +287,7 @@ class AzureOpenAIImageAnalyzer:
         if not user_content:
             return _mock_fallback_result("", notes)
 
-        notes_text = (notes or "").strip() or "No observer notes provided."
+        notes_text = _analysis_notes_text(notes, image_ids)
         user_content.append({"type": "text", "text": f"Observer notes: {notes_text}"})
 
         try:
@@ -228,7 +302,7 @@ class AzureOpenAIImageAnalyzer:
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user", "content": user_content},
                 ],
-                max_completion_tokens=600,
+                max_completion_tokens=PROMPT_SETTINGS["max_completion_tokens"],
             )
         except (APIConnectionError, APIStatusError, APIError):
             return _mock_fallback_result(image_paths[0], notes)
@@ -244,8 +318,16 @@ class AzureOpenAIImageAnalyzer:
                     content = content[4:]
             data = json.loads(content)
         except (IndexError, AttributeError):
-            return _mock_fallback_result(image_paths[0], notes)
+            return _failed_validation_result(
+                "",
+                self.deployment,
+                "Azure response was missing message content.",
+            )
         except json.JSONDecodeError:
-            return _mock_fallback_result(image_paths[0], notes)
+            return _failed_validation_result(
+                content,
+                self.deployment,
+                "Azure response was not valid JSON.",
+            )
 
-        return _validate_response(data, self.deployment)
+        return _validate_response(data, self.deployment, image_ids)

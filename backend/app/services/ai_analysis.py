@@ -9,6 +9,7 @@ AI image analysis — single entry point for the app.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 
 from app.config import settings
@@ -39,9 +40,16 @@ class AIAnalysisResult:
     uncertainty: str = field(
         default="No uncertainty statement was provided. Human verification is required."
     )
+    schema_version: str = "2"
+    structured_response: dict | None = None
+    validation_error: str | None = None
 
 
-def _mock_analyze(image_path: str, notes: str | None) -> AIAnalysisResult:
+def _mock_analyze(
+    image_path: str,
+    notes: str | None,
+    image_ids: list[int] | None = None,
+) -> AIAnalysisResult:
     """
     Keyword-scan the observer notes for damage indicators.
     No image or API key needed — used when Azure is disabled or unconfigured.
@@ -86,17 +94,55 @@ def _mock_analyze(image_path: str, notes: str | None) -> AIAnalysisResult:
             detected_tags.append(tag)
 
     image_present = bool(image_path and Path(image_path).exists())
-    if not detected_tags:
-        detected_tags = ["other"]
-
-    severity = min(5, max(1, len(detected_tags) + 1))
-    confidence = 35 if len(detected_tags) > 1 else 20
-
     prefix = "" if image_present else "No image uploaded. "
-    summary = (
-        f"{prefix}Mock analysis used because Azure AI is disabled or unavailable. "
-        f"Keywords detected in notes: {', '.join(detected_tags)}."
-    )
+    image_refs = list(image_ids or [])
+    if not image_refs:
+        image_refs = [1] if image_present else []
+    if detected_tags:
+        severity = min(5, max(1, len(detected_tags) + 1))
+        confidence = 35 if len(detected_tags) > 1 else 20
+        evidence_sufficiency = "partial"
+        summary = (
+            f"{prefix}Mock analysis used because Azure AI is disabled or unavailable. "
+            f"Keywords detected in notes: {', '.join(detected_tags)}."
+        )
+        indicators = [
+            {
+                "indicator_type": tag,
+                "evidence_location": (
+                    f"keyword mention in reviewed notes; image refs {', '.join(str(ref) for ref in image_refs) or 'unavailable'}"
+                ),
+                "image_refs": image_refs,
+                "confidence": 0.35 if len(detected_tags) > 1 else 0.2,
+                "supporting_evidence": f"Reviewed notes mention {tag.replace('_', ' ')}.",
+                "severity_contribution": severity,
+            }
+            for tag in detected_tags
+        ]
+        insufficient_reason = None
+    else:
+        detected_tags = []
+        severity = 1
+        confidence = 10
+        evidence_sufficiency = "insufficient"
+        summary = (
+            f"{prefix}Mock analysis used because Azure AI is disabled or unavailable. "
+            "No keyword indicators were detected in the reviewed notes."
+        )
+        indicators = []
+        insufficient_reason = (
+            "Mock fallback scans reviewed notes only and found no supported "
+            "visible-risk keywords."
+        )
+
+    structured_response = {
+        "schema_version": "2",
+        "provider": "mock",
+        "overall_summary": summary,
+        "evidence_sufficiency": evidence_sufficiency,
+        "indicators": indicators,
+        "insufficient_reason": insufficient_reason,
+    }
 
     return AIAnalysisResult(
         damage_tags=detected_tags,
@@ -109,17 +155,19 @@ def _mock_analyze(image_path: str, notes: str | None) -> AIAnalysisResult:
             "emergency, legal, or cultural heritage advice."
         ),
         provider="mock",
-        raw_response=None,
+        raw_response=json.dumps(structured_response),
         uncertainty=(
             "High uncertainty. Mock fallback scans contributor notes and does not "
             "inspect image pixels."
         ),
+        structured_response=structured_response,
     )
 
 
 def analyze_observation_image(
     image_path: str,
     notes: str | None = None,
+    image_id: int | None = None,
 ) -> AIAnalysisResult:
     """
     Analyse an observation image and return an AIAnalysisResult.
@@ -127,10 +175,10 @@ def analyze_observation_image(
     as a result with confidence=0 so the route can always write to the DB.
     """
     if not getattr(settings, "azure_openai_enabled", False):
-        return _mock_analyze(image_path, notes)
+        return _mock_analyze(image_path, notes, [image_id] if image_id else None)
 
     if not settings.azure_credentials_present:
-        result = _mock_analyze(image_path, notes)
+        result = _mock_analyze(image_path, notes, [image_id] if image_id else None)
         result.summary = (
             "Mock analysis used because Azure AI is disabled or unavailable. "
             + result.summary
@@ -142,24 +190,25 @@ def analyze_observation_image(
             AzureOpenAIImageAnalyzer,
         )
 
-        return AzureOpenAIImageAnalyzer().analyze(image_path, notes)
+        return AzureOpenAIImageAnalyzer().analyze(image_path, notes, image_id=image_id)
     except Exception:  # noqa: BLE001
-        return _mock_analyze(image_path, notes)
+        return _mock_analyze(image_path, notes, [image_id] if image_id else None)
 
 
 def analyze_observation_images(
     image_paths: list[str],
     notes: str | None = None,
+    image_ids: list[int] | None = None,
 ) -> AIAnalysisResult:
     """Analyse one or more observation images behind the same fallback rules."""
     valid_paths = [path for path in image_paths if path]
     primary_image_path = valid_paths[0] if valid_paths else ""
 
     if not getattr(settings, "azure_openai_enabled", False):
-        return _mock_analyze(primary_image_path, notes)
+        return _mock_analyze(primary_image_path, notes, image_ids)
 
     if not settings.azure_credentials_present:
-        result = _mock_analyze(primary_image_path, notes)
+        result = _mock_analyze(primary_image_path, notes, image_ids)
         result.summary = (
             "Mock analysis used because Azure AI is disabled or unavailable. "
             + result.summary
@@ -171,6 +220,6 @@ def analyze_observation_images(
             AzureOpenAIImageAnalyzer,
         )
 
-        return AzureOpenAIImageAnalyzer().analyze_many(valid_paths, notes)
+        return AzureOpenAIImageAnalyzer().analyze_many(valid_paths, notes, image_ids=image_ids)
     except Exception:  # noqa: BLE001
-        return _mock_analyze(primary_image_path, notes)
+        return _mock_analyze(primary_image_path, notes, image_ids)

@@ -34,6 +34,32 @@ def _make_fake_settings(*, enabled: bool, has_creds: bool) -> MagicMock:
     return s
 
 
+def _v2_payload(
+    *,
+    indicator_type: str = "crack",
+    confidence: float = 0.72,
+    severity: int = 3,
+    image_refs: list[int] | None = None,
+) -> dict:
+    return {
+        "schema_version": "2",
+        "provider": "azure:gpt-5-mini",
+        "overall_summary": "Visible crack along the east wall.",
+        "evidence_sufficiency": "partial",
+        "indicators": [
+            {
+                "indicator_type": indicator_type,
+                "evidence_location": "upper left of image 1",
+                "image_refs": image_refs or [1],
+                "confidence": confidence,
+                "supporting_evidence": "A narrow linear opening is visible.",
+                "severity_contribution": severity,
+            }
+        ],
+        "insufficient_reason": None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tests: mock mode
 # ---------------------------------------------------------------------------
@@ -61,12 +87,14 @@ class TestMockAnalysis:
         assert "graffiti" in result.damage_tags
         assert "water_staining" in result.damage_tags
 
-    def test_mock_uses_other_when_no_keywords(self):
-        """Mock always returns at least ['other'] when nothing is detected."""
+    def test_mock_uses_insufficient_when_no_keywords(self):
+        """Mock v2 returns insufficient evidence instead of inventing indicators."""
         from app.services.ai_analysis import _mock_analyze
 
         result = _mock_analyze("", "Looks fine to me")
-        assert result.damage_tags == ["other"]
+        assert result.damage_tags == []
+        assert result.structured_response["evidence_sufficiency"] == "insufficient"
+        assert result.structured_response["indicators"] == []
 
     def test_mock_tags_are_in_allowed_set(self):
         """Every tag the mock produces must be in the allowed taxonomy."""
@@ -228,16 +256,7 @@ class TestProviderValidation:
             choices=[
                 SimpleNamespace(
                     message=SimpleNamespace(
-                        content=json.dumps(
-                            {
-                                "damage_tags": ["crack"],
-                                "severity": 3,
-                                "confidence": 81,
-                                "summary": "Visible crack along the wall.",
-                                "uncertainty": "The crack depth cannot be determined.",
-                                "recommended_action": "Human review required before action.",
-                            }
-                        )
+                        content=json.dumps(_v2_payload(confidence=0.81))
                     )
                 )
             ]
@@ -253,12 +272,12 @@ class TestProviderValidation:
             analyzer = AzureOpenAIImageAnalyzer()
 
         with patch("openai.OpenAI", return_value=fake_client) as openai_cls:
-            result = analyzer.analyze(str(image_path), notes="crack")
+            result = analyzer.analyze(str(image_path), notes="crack", image_id=1)
 
         assert result.provider == "azure:gpt-5-mini"
         assert result.damage_tags == ["crack"]
         assert result.confidence == 81
-        assert result.uncertainty == "The crack depth cannot be determined."
+        assert result.structured_response["schema_version"] == "2"
         openai_cls.assert_called_once_with(
             api_key="fake-key",
             base_url="https://fake.openai.azure.com/openai/v1/",
@@ -281,14 +300,12 @@ class TestProviderValidation:
                 SimpleNamespace(
                     message=SimpleNamespace(
                         content=json.dumps(
-                            {
-                                "damage_tags": ["erosion"],
-                                "severity": 2,
-                                "confidence": 65,
-                                "summary": "Possible erosion is visible.",
-                                "uncertainty": "Lighting differs between images.",
-                                "recommended_action": "Human review required.",
-                            }
+                            _v2_payload(
+                                indicator_type="erosion",
+                                confidence=0.65,
+                                severity=2,
+                                image_refs=[202],
+                            )
                         )
                     )
                 )
@@ -308,16 +325,16 @@ class TestProviderValidation:
             result = analyzer.analyze_many(
                 [str(first_path), str(second_path)],
                 notes="Site name: Test Memorial",
+                image_ids=[101, 202],
             )
 
         assert result.provider == "azure:gpt-5-mini"
         call_kwargs = fake_client.chat.completions.create.call_args.kwargs
         user_content = call_kwargs["messages"][1]["content"]
         assert len([item for item in user_content if item["type"] == "image_url"]) == 2
-        assert user_content[-1] == {
-            "type": "text",
-            "text": "Observer notes: Site name: Test Memorial",
-        }
+        assert user_content[-1]["type"] == "text"
+        assert "Observer notes: Site name: Test Memorial" in user_content[-1]["text"]
+        assert "101, 202" in user_content[-1]["text"]
 
 
 # ---------------------------------------------------------------------------
@@ -336,72 +353,53 @@ class TestResponseValidation:
 
     def test_valid_response_parsed_correctly(self):
         analyzer = self._make_analyzer()
-        data = {
-            "damage_tags": ["crack", "erosion"],
-            "severity": 3,
-            "confidence": 72,
-            "summary": "Visible crack along the east wall.",
-            "uncertainty": "The image does not show the crack depth.",
-            "recommended_action": "Schedule inspection within 30 days.",
-        }
+        data = _v2_payload(indicator_type="erosion", confidence=0.72, severity=3)
         result = analyzer._validate_response(data)
-        assert result.damage_tags == ["crack", "erosion"]
+        assert result.damage_tags == ["erosion"]
         assert result.severity == 3
         assert result.confidence == 72
-        assert result.uncertainty == "The image does not show the crack depth."
         assert result.provider == "azure:gpt-5-mini"
         assert result.raw_response is not None
+        assert json.loads(result.raw_response)["schema_version"] == "2"
         # raw_response must not contain base64 image data — just the small JSON fields
         assert len(result.raw_response) < 2000
 
-    def test_unknown_tags_are_dropped(self):
+    def test_unknown_tags_fail_validation(self):
+        analyzer = self._make_analyzer()
+        data = _v2_payload(indicator_type="alien_invasion")
+        result = analyzer._validate_response(data)
+        assert result.damage_tags == []
+        assert result.validation_error
+        assert "Unknown indicator_type" in result.validation_error
+
+    def test_insufficient_evidence_allows_empty_indicators(self):
         analyzer = self._make_analyzer()
         data = {
-            "damage_tags": ["crack", "alien_invasion", "fire"],
-            "severity": 2,
-            "confidence": 50,
-            "summary": "Some damage.",
-            "recommended_action": "Inspect.",
+            "schema_version": "2",
+            "provider": "azure:gpt-5-mini",
+            "overall_summary": "No visible indicators could be confirmed.",
+            "evidence_sufficiency": "insufficient",
+            "indicators": [],
+            "insufficient_reason": "Images are too distant.",
         }
         result = analyzer._validate_response(data)
-        assert "alien_invasion" not in result.damage_tags
-        assert "fire" not in result.damage_tags
-        assert "crack" in result.damage_tags
+        assert result.damage_tags == []
+        assert result.severity == 1
+        assert result.confidence == 0
 
-    def test_empty_tags_becomes_other(self):
+    def test_severity_out_of_range_fails_validation(self):
         analyzer = self._make_analyzer()
-        data = {
-            "damage_tags": [],
-            "severity": 1,
-            "confidence": 60,
-            "summary": "No damage visible.",
-            "recommended_action": "Continue monitoring.",
-        }
-        result = analyzer._validate_response(data)
-        assert result.damage_tags == ["other"]
+        result = analyzer._validate_response(_v2_payload(severity=99))
+        assert result.validation_error
+        assert result.damage_tags == []
 
-    def test_severity_clamped_to_range(self):
+    def test_confidence_out_of_range_fails_validation(self):
         analyzer = self._make_analyzer()
-        result_low = analyzer._validate_response({
-            "damage_tags": ["crack"], "severity": -5,
-            "confidence": 50, "summary": "x", "recommended_action": "y",
-        })
-        result_high = analyzer._validate_response({
-            "damage_tags": ["crack"], "severity": 99,
-            "confidence": 50, "summary": "x", "recommended_action": "y",
-        })
-        assert result_low.severity == 1
-        assert result_high.severity == 5
+        result = analyzer._validate_response(_v2_payload(confidence=9.99))
+        assert result.validation_error
+        assert result.confidence == 0
 
-    def test_confidence_clamped_to_range(self):
-        analyzer = self._make_analyzer()
-        result = analyzer._validate_response({
-            "damage_tags": ["crack"], "severity": 2,
-            "confidence": 999, "summary": "x", "recommended_action": "y",
-        })
-        assert result.confidence == 100
-
-    def test_bad_json_string_returns_mock_result(self, tmp_path):
+    def test_bad_json_string_returns_failed_validation_result(self, tmp_path):
         """Simulate the model returning prose instead of JSON."""
         from app.services.providers.azure_openai_provider import AzureOpenAIImageAnalyzer
 
@@ -428,8 +426,9 @@ class TestResponseValidation:
         with patch("openai.OpenAI", return_value=fake_client):
             result = analyzer.analyze(str(image_path), notes="crack")
 
-        assert result.provider == "mock"
-        assert "crack" in result.damage_tags
+        assert result.provider == "azure:gpt-5-mini"
+        assert result.validation_error == "Azure response was not valid JSON."
+        assert result.damage_tags == []
 
 
 # ---------------------------------------------------------------------------
