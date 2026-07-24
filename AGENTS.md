@@ -20,9 +20,17 @@ for verified behavior and known limitations.
 The research experiment path is separate from the community workflow. It uses
 `ExperimentAsset` and `AssessmentSession` rows to run paired `single_medium`
 and `three_view` AI analyses against the same physical asset, with prompt
-configuration hashes, run metadata, and CSV export for later statistical
-analysis. These sessions do not enter the review queue and do not create
-`RiskCase` rows.
+template/configuration and rendered-request hashes, run metadata, and CSV export
+for later statistical analysis. Split manifests can run `pilot` (default),
+`held_out`, or `all` assets, and `--repeat-runs N` creates zero-based repeated
+sessions under the unique `(asset, condition, run_index)` key. Each new session
+records the selected asset set, the settings used by the request builder, and a
+per-session hash of the fully rendered Azure-shaped request; the raw request is
+not stored. In mock mode that second hash identifies a would-be Azure request,
+not a transmitted request. These sessions do not enter the review queue and do
+not create `RiskCase` rows. Each `ExperimentAsset` can store the manifest's
+optional redacted `site_label`; session- and indicator-level exports retain it
+so analysis can report site-concentration counts once per physical asset.
 
 `research/corpus/` contains metadata-only corpus audit tooling. Raw photographs
 must stay outside Git; only schemas, manifests, hashes, and aggregate audit
@@ -80,12 +88,38 @@ The `app/routers/` package exists and is empty — leave it empty until there is
 
 `AZURE_OPENAI_ENABLED` defaults to `false`. The mock keyword scanner (`_mock_analyze` in `services/ai_analysis.py`) is the default AI path and must continue to work with zero credentials and zero network access.
 
-Every Azure error path must fall back to mock — never crash a route. New AI providers follow the same rule: if the provider fails or is unconfigured, fall back to mock and set `ai_analysis_status = "mock"` or `"failed"` accordingly.
+Every operational Azure error path must fall back to mock — never crash a
+route. Before the fallback becomes the active proposal, append a failed
+`AIAnalysisRecord` with the Azure provider identity, fixed sanitized diagnostic,
+and timestamp; append the labelled mock as a second record. Malformed JSON and
+strict schema-validation failures remain one failed record with no mock result.
+Never persist exception text, credentials, endpoints, response bodies, or file
+paths as operational diagnostics.
 
 When adding a new AI provider, preserve the existing `AIAnalysisResult` return
 type and both `analyze_observation_image` (service-level single-image
 compatibility) and `analyze_observation_images` (multi-image) entry points. The
 single-image upload route itself has been removed.
+
+Persisted provider values use `mock`, legacy `azure_openai`,
+`azure:<deployment>`, or `azure:unconfigured`. All runtime provider-family
+decisions in routes, reports, templates, and scripts must use
+`app.provider_identity.provider_identity`; do not add raw string comparisons or
+ad-hoc prefix checks. Exact-string test assertions may remain when they verify
+the persisted provider contract.
+
+Experiment prompt provenance has two distinct hashes. For new sessions,
+`AssessmentSession.prompt_template_sha256` is non-null and covers the rendered
+system prompt, deployment, and request settings.
+`rendered_request_sha256` covers the canonical, fully rendered per-session
+Azure-shaped request, including dynamic notes and image content, without
+storing that raw payload. It is nullable because legacy rows cannot reconstruct
+their historical request; their old `prompt_sha256` column is renamed in place
+without recomputing its values. Keep
+`PROMPT_SETTINGS` limited to arguments actually passed to the Azure client and
+keep the session's `request_settings` copy identical; do not record placeholder
+values such as an omitted temperature. A mock session may record the fingerprint
+of a would-be request, but it must never be described as transmitted.
 
 ## 6. All AI Outputs Are Triage Only
 
@@ -124,6 +158,11 @@ Keep the three provenance layers separate:
   payloads must be stored as failed validation states with sanitized raw payloads
   preserved; do not silently coerce, drop, or clamp model output. Existing v1
   rows remain readable through the legacy aggregate fields.
+- `Observation.analysis_records` is append-only through application routes. It
+  records each active result plus any operational Azure failure that preceded a
+  mock fallback. Risk Case snapshots copy this ordered metadata so reports do
+  not consult later live attempt rows. These records are attempt metadata, not
+  complete immutable revisions of every prior AI payload.
 - `RiskCase.final_snapshot` is the reviewer-accepted evidence and exact scoring record. For snapshotted cases, case pages and both report formats must read final evidence, weights, multiplier, equation, capped score, and band from that snapshot, never recalculate from the live Observation. Legacy cases without a snapshot may show their stored scalar score and band, but detailed provenance must remain unavailable.
 - `Observation.reviewed_by` records the configured reviewer identity required
   before analysis. `RiskCase.finalized_by` records the finalizer. Both are copied
@@ -194,6 +233,9 @@ Implemented and tested in the July 2026 build:
   metadata-free Pillow re-encoding on every upload route
 - A `Pending` review queue with status filters and approve/reject/sensitive actions
 - Multi-image AI request assembly with correctly labelled mock fallback
+- Ordered AI attempt records: operational Azure failures are stored with
+  sanitized diagnostics before the separate labelled mock fallback; malformed
+  JSON remains a single failed validation result
 - Schema v2 AI proposals with per-indicator evidence, strict validation failure
   storage, insufficient-evidence support, and v1 render compatibility
 - Human AI-output review before the primary Risk Case creation route
@@ -208,69 +250,18 @@ Implemented and tested in the July 2026 build:
 - Enforced Risk Case status transitions with `CaseEvent` history rendered on
   case pages and reports
 - Separate paired-experiment tables and scripts for `single_medium` vs
-  `three_view` mock/Azure runs, including prompt hashes and CSV export
+  `three_view` mock/Azure runs, including pilot/held-out/all selection, distinct
+  template/configuration and rendered-request hashes, repeated `run_index`
+  sessions, resume-safe run keys, request settings limited to Azure-transmitted
+  arguments, optional redacted site labels, and CSV export
 - Metadata-only corpus audit and cleared-asset selection scripts under
   `research/corpus/`; raw photos remain excluded from Git
 - Research analysis functions for precision/recall/F1, unsupported claims,
   insufficient evidence, paired deltas, Wilcoxon/effect size/bootstrap CIs,
-  confidence calibration, Cohen's kappa, and repeatability
+  confidence calibration, Cohen's kappa, repeatability, and physical-asset
+  site concentration; primary metrics use run index 0 while repeatability uses
+  all exported runs
 - Removal of the legacy `/sites/{id}/observations/new` and
   `/sites/{id}/observations` upload routes and their template
 
-Community workflow multi-image evidence still belongs directly to one
-`Observation`. Experiment sessions are separate research records and must not be
-presented as reviewed community observations or Risk Cases. YOLO detection, an
-aggregated site-level risk view, a completed labelled dataset, evidence fusion,
-completed live-Azure experiment results, and model-comparison conclusions remain
-unimplemented.
-
-Do not overstate the implemented workflow. The Observation working copy remains
-editable, prior AI attempts are not retained as complete revisions, and older
-database rows can have `NULL` provenance or reviewer identities. The single
-credential does not provide individual accounts, roles, recovery, throttling, or
-an append-only action history. Local HTTP does not set the session cookie's
-`Secure` flag, and upload URLs plus read-only case/report pages remain public.
-[competition_baseline.md](competition_baseline.md) records these and the other
-limitations, including unverified live Azure behavior.
-
-If a feature is planned but not built, it may appear in `PROJECT_CHARTER.md` and `TECHNICAL_SCOPE.md` as a future target. It must not appear in the app UI, evidence reports, or seed data as if it were working.
-
-## 12. Keep Code Readable for a Student Competition Project
-
-Style rules (these are also enforced by `feedback_refactor_decisions.md` in the project memory):
-
-- No ASCII banner comments (`# ── Section ──────────`). Use blank lines to separate sections.
-- No duplicate implementations of the same logic.
-- No class with a single method and two private helpers — extract as module-level functions instead.
-- Module docstrings: 1–4 lines. State purpose or routing logic only.
-- Comments explain *why*, not *what*. A good comment: "# Lazy import — keeps app working without openai installed". A bad comment: `# Create risk case` above three obvious lines.
-- No marketing words in UI text: seamless, cutting-edge, revolutionary, leveraging, robust, empowering, platform (as buzzword).
-- No multi-paragraph docstrings or 14-line docstring blocks.
-
----
-
-## Tag Taxonomy
-
-The damage tag set is shared across three files and must stay consistent:
-
-`crack, erosion, graffiti, corrosion, water_staining, vegetation_growth, surface_loss, fire_damage, other`
-
-Files that define or reference this list:
-- `app/risk.py` — `TAG_WEIGHTS` (source of truth for scoring)
-- `app/services/ai_analysis.py` — `ALLOWED_TAGS`
-- `app/services/providers/azure_openai_provider.py` — `ALLOWED_TAGS`
-
-If a tag is added or removed, update all three locations and update the relevant tests.
-
----
-
-## Quick Reference
-
-| Task | Command |
-|------|---------|
-| Run the app | `cd backend && python3 run.py` → http://127.0.0.1:8000 |
-| Reviewer login | http://127.0.0.1:8000/reviewer/login |
-| Seed demo data | Sign in and POST `/seed` from the UI, or `cd backend && python3 -m app.seed` for local CLI seeding |
-| Run tests | `cd backend && pytest` |
-| Reset database | Delete `data/heritagerisk.db`, then reseed |
-| Azure smoke test | `cd backend && python3 ../scripts/test_azure_openai.py` (needs `.env`) |
+Communi

@@ -8,6 +8,110 @@ Older entries record the state and decisions at their dates. Later entries and
 
 ---
 
+## Entry #27 — 2026-07-24
+
+### Exact Rendered-Request Fingerprints Without Raw Request Storage
+
+Experiment prompt provenance now has two explicit boundaries.
+`prompt_template_sha256` hashes the rendered system prompt, deployment, and
+request settings, while `rendered_request_sha256` hashes the canonical
+per-session Azure-shaped request including dynamic notes and image content. The
+raw request is deliberately not stored. In mock mode the latter is a would-be
+Azure request fingerprint; in Azure mode it covers the arguments constructed
+for transmission.
+
+`PROMPT_SETTINGS` and the session's `request_settings` now contain only values
+actually passed to the client, currently `max_completion_tokens = 600`.
+Temperature and schema version are absent rather than recorded as unsent
+settings. The guarded SQLite compatibility migration renames legacy
+`prompt_sha256` in place and adds the rendered-request column, leaving that
+unreconstructable historical hash `NULL`. Tests cover both hash boundaries,
+request-setting alignment, exports, and legacy migration. Experiment blinding
+remains external and is not recorded.
+
+---
+
+## Entry #26 — 2026-07-24
+
+### Native Repeated Assessment Sessions
+
+`AssessmentSession` now has a zero-based `run_index` and is unique on
+`(asset_id, condition, run_index)`. The SQLite startup helper transactionally
+rebuilds only the legacy assessment-session table because SQLite cannot drop
+its old two-column table constraint; existing rows and ids are preserved at
+index 0. The migration is idempotent.
+
+`scripts/run_experiment.py --repeat-runs N` creates indices `0` through `N - 1`
+for both conditions with the same images, prompt hash, deployment, and settings
+within the invocation. Resume checks include the run index. CSV exports carry
+the index on session and indicator rows, and legacy exports default to index 0
+when loaded.
+
+Primary precision/recall/F1, paired-delta, insufficient-evidence, and confidence
+metrics use run index 0 so repeats do not inflate the paired comparison.
+Repeatability uses every exported run and includes empty indicator sets.
+Synthetic mock tests cover two repeats producing four sessions for one asset,
+a no-op resume, and hand-computed exact/Jaccard agreement. No real repeated
+Azure experiment result is committed.
+
+---
+
+## Entry #25 — 2026-07-24
+
+### Site Labels in Experiment Exports and Concentration Analysis
+
+`ExperimentAsset` now stores the optional redacted `site_label` emitted by the
+corpus asset selector. The experiment runner persists it without erasing an
+existing label when a legacy manifest omits the field. The startup migration
+adds the nullable column to existing SQLite experiment databases and leaves
+historical labels unknown rather than reconstructing them.
+
+Both session- and indicator-level CSV rows now include the asset label, and the
+analysis loader keeps the optional field while remaining compatible with older
+exports. Site concentration excludes blank labels and counts each physical
+asset once across its paired sessions. Synthetic tests cover three assets across
+two labels, a largest-site share of two-thirds, and the rendered non-NaN value.
+No real site distribution or experiment result is committed.
+
+---
+
+## Entry #24 — 2026-07-24
+
+### Direct Pilot and Held-Out Experiment Selection
+
+`scripts/run_experiment.py` now accepts `--asset-set pilot|held_out|all`.
+`pilot` remains the default and reads the existing `assets` list,
+`held_out` reads `held_out_assets`, and `all` combines them. Every newly
+created `AssessmentSession` stores the selected set in its settings JSON, so
+exports can distinguish which split initiated the session. Resume behavior
+keeps the original setting on existing sessions rather than relabelling them.
+
+Synthetic mock-mode tests cover two pilot assets producing four paired sessions,
+three held-out assets producing six, and all five assets producing ten. No real
+held-out experiment result is committed.
+
+---
+
+## Entry #23 — 2026-07-24
+
+### Preserved Azure Failure Attempts Before Mock Fallback
+
+Added `AIAnalysisRecord` as an append-only application record for analysis
+status, provider identity, sanitized diagnostic, and timestamp. Operational
+Azure configuration, import, image-preparation, transport, API, and unexpected
+provider failures now produce an ordered pair: a failed
+`azure:<deployment>`/`azure:unconfigured` record followed by a separate
+labelled `mock` result. Diagnostics are fixed categories and never contain
+exception text, credentials, endpoints, response bodies, or file paths.
+
+The AI review page shows the ordered attempts. Risk Case creation copies them
+into the immutable snapshot, and both report formats render only that snapshot.
+Malformed JSON and strict schema-validation failures remain one failed result
+with no mock fallback. Attempt records preserve failure/outcome metadata, not
+complete immutable revisions of every earlier proposal.
+
+---
+
 ## Entry #22 — 2026-07-23
 
 ### Paired Experiment Statistical Analysis Functions
@@ -106,10 +210,9 @@ validation status, and exits nonzero with the preserved app state if Azure falls
 back to mock or validation fails. Automated tests cover mock seeding and the
 missing-environment refusal path; they do not call live Azure.
 
-The preserved app state differs by failure class: schema-validation failures
-retain the sanitized raw payload, while transport/configuration fallbacks retain
-only labelled mock output and do not retain the failed Azure attempt or
-diagnostic.
+This entry described the behavior at implementation time. Entry #23 supersedes
+its failure-preservation limitation: operational Azure failures now retain a
+sanitized failed-attempt record before the labelled mock fallback.
 
 ---
 

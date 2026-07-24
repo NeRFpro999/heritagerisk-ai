@@ -4,12 +4,12 @@
 > workflow. Current verified behavior and test evidence are recorded in
 > [`competition_baseline.md`](../competition_baseline.md).
 
-## Current Verification — 2026-07-23
+## Current Verification — 2026-07-24
 
 The current offline suite result is:
 
 ```text
-220 passed, 538 warnings in 121.92s (0:02:01)
+232 passed, 579 warnings in 205.86s (0:03:25)
 ```
 
 Command:
@@ -29,7 +29,25 @@ They also cover manifest demo seeding in mock mode and Azure-verifier refusal
 when required environment variables are missing, plus schema v2 AI indicator
 validation, failed validation preservation, insufficient-evidence finalization,
 and v1 compatibility rendering. Azure-dependent paths use mocks; no live Azure
-call is part of this result.
+call is part of this result. Provider-identity regressions cover legacy
+`azure_openai`, deployment-qualified `azure:<deployment>`, mock, and unknown
+values, including Azure classification through Risk Case finalization.
+Operational Azure failure regressions also verify ordered failed-then-mock
+records, fixed sanitized diagnostics, timestamp persistence, image-reference
+preservation, immutable report snapshots, and the unchanged single-failure
+behavior for malformed JSON.
+Experiment-script regressions verify default pilot selection, direct held-out
+and combined-set execution, expected paired-session counts, and persisted
+`asset_set` session settings. They also verify nullable site-label migration,
+manifest-to-asset persistence, both export row types, loader propagation, and
+three-asset/two-site concentration counts with a non-NaN Markdown share.
+Repeatability regressions cover migration from the legacy two-column
+constraint, two runs per condition producing four sessions for one asset,
+resume-by-index behavior, exported indices, and loader-to-metric
+hand-calculated exact/Jaccard agreement. Prompt-provenance regressions verify
+separate template/configuration and rendered-request hashes, dynamic-content
+sensitivity, exported hash fields, settings limited to arguments actually sent,
+and legacy migration with a `NULL` rendered-request hash.
 
 The access tests do not establish production security. One shared credential,
 login throttling/recovery, HTTPS and `Secure` cookies, public upload/report

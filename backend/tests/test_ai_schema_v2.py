@@ -141,6 +141,59 @@ def test_valid_v2_parses_and_renders(v2_context):
     assert "72%" in response.text
 
 
+def test_deployment_qualified_azure_provider_stays_azure_at_finalization(
+    v2_context,
+):
+    from app.models import Observation, RiskCase
+    from app.provider_identity import PROVIDER_AZURE, provider_identity
+
+    db = v2_context["db"]
+    observation = db.get(Observation, v2_context["observation_id"])
+    payload = _valid_v2_payload([image.id for image in observation.images])
+    payload["provider"] = "azure:mydeploy"
+
+    observation = _apply_result(
+        v2_context,
+        payload,
+        provider="azure:mydeploy",
+    )
+
+    assert provider_identity(observation.ai_provider) == PROVIDER_AZURE
+    assert observation.ai_provider == "azure:mydeploy"
+    assert observation.ai_analysis_status == "complete"
+    assert observation.ai_analysis_status != "mock"
+
+    detail = v2_context["client"].get(
+        f"/observations/{v2_context['observation_id']}"
+    )
+    assert "Azure OpenAI (azure:mydeploy)" in detail.text
+
+    response = post_form(
+        v2_context["client"],
+        f"/observations/{v2_context['observation_id']}/create_risk_case",
+        data={
+            "final_damage_tags": "crack",
+            "final_severity": "3",
+            "final_ai_summary": payload["overall_summary"],
+            "final_recommended_action": "Human review required before action.",
+            "indicator_action": "accept",
+            "indicator_type": "crack",
+            "indicator_severity": "3",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    db.expire_all()
+    case = db.query(RiskCase).one()
+    assert case.final_snapshot["ai_proposal"]["provider"] == "azure:mydeploy"
+    assert case.final_snapshot["ai_proposal"]["analysis_status"] == "complete"
+
+    report = v2_context["client"].get(f"/cases/{case.id}/report.md")
+    assert "Actual analysis provider: Azure OpenAI Vision" in report.text
+    assert "AI analysis status: complete" in report.text
+
+
 def test_invalid_indicator_type_becomes_failed_state_with_raw_payload(v2_context):
     db = v2_context["db"]
     observation = db.get(

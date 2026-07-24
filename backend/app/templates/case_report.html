@@ -100,6 +100,26 @@
     {% if ai.analysis_status == "mock" %}
     <div class="ai-notice ai-notice-mock">Mock fallback was used; image pixels were not analysed.</div>
     {% endif %}
+    {% if snapshot.analysis_attempts_available %}
+    <h3>Analysis Attempt History</h3>
+    <ol class="event-list">
+      {% for attempt in snapshot.analysis_attempts %}
+      <li>
+        <strong>{{ attempt.status | upper }}</strong>
+        via {{ attempt.provider }}
+        {% if attempt.created_at %}at {{ attempt.created_at }}{% endif %}
+        {% if attempt.status == "mock" %}
+        <span>— labelled mock fallback</span>
+        {% endif %}
+        {% if attempt.diagnostic %}<p>{{ attempt.diagnostic }}</p>{% endif %}
+      </li>
+      {% else %}
+      <li>No analysis attempt records were stored for this case.</li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="empty">Analysis attempt history is unavailable for this case.</p>
+    {% endif %}
     <dl class="report-data-grid">
       <div><dt>Provider</dt><dd>{{ ai.provider or ("Not available" if legacy else "Not recorded") }}</dd></div>
       <div><dt>Schema version</dt><dd>{{ ai.schema_version or "v1" }}</dd></div>

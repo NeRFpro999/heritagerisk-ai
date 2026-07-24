@@ -19,12 +19,15 @@ BACKEND_ROOT = REPO_ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from app.provider_identity import PROVIDER_MOCK, provider_identity
+
 REQUIRED_AZURE_ENV = (
     "AZURE_OPENAI_ENDPOINT",
     "AZURE_OPENAI_API_KEY",
     "AZURE_OPENAI_PRIMARY_DEPLOYMENT",
 )
 CONDITIONS = ("single_medium", "three_view")
+ASSET_SETS = ("pilot", "held_out", "all")
 ROLE_INDEX = {"wide": 1, "medium": 2, "close": 3}
 
 
@@ -32,15 +35,42 @@ class ExperimentError(RuntimeError):
     pass
 
 
-def _load_manifest(path: Path) -> list[dict[str, Any]]:
+def _load_manifest(
+    path: Path,
+    asset_set: str = "pilot",
+) -> list[dict[str, Any]]:
     if not path.exists():
         raise ExperimentError(f"Manifest not found: {path}")
+    if asset_set not in ASSET_SETS:
+        raise ExperimentError(f"Unknown asset set: {asset_set}")
+
     if path.suffix.lower() == ".csv":
         with path.open(newline="", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
     elif path.suffix.lower() == ".json":
         payload = json.loads(path.read_text(encoding="utf-8"))
-        rows = payload["assets"] if isinstance(payload, dict) else payload
+        if isinstance(payload, dict):
+            pilot_rows = payload.get("assets")
+            if not isinstance(pilot_rows, list):
+                raise ExperimentError("JSON manifest must contain an assets list.")
+            held_out_rows = payload.get("held_out_assets", [])
+            if not isinstance(held_out_rows, list):
+                raise ExperimentError(
+                    "JSON manifest held_out_assets must be a list."
+                )
+            if asset_set == "pilot":
+                rows = pilot_rows
+            elif asset_set == "held_out":
+                if "held_out_assets" not in payload:
+                    raise ExperimentError(
+                        "--asset-set held_out requires held_out_assets in "
+                        "the JSON manifest."
+                    )
+                rows = held_out_rows
+            else:
+                rows = [*pilot_rows, *held_out_rows]
+        else:
+            rows = payload
     else:
         raise ExperimentError("Manifest must be CSV or JSON.")
     if not isinstance(rows, list):
@@ -91,6 +121,11 @@ def _parse_site_id(value: Any) -> int | None:
     return int(text) if text else None
 
 
+def _parse_site_label(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
 def _result_payload(result, allowed_image_ids: list[int]) -> tuple[str, dict[str, Any]]:
     from app.ai_schema import validate_analysis_result, validation_error_text
 
@@ -101,7 +136,11 @@ def _result_payload(result, allowed_image_ids: list[int]) -> tuple[str, dict[str
         except json.JSONDecodeError:
             parsed_raw = result.raw_response
 
-    status = "mock" if result.provider == "mock" else "complete"
+    status = (
+        "mock"
+        if provider_identity(result.provider) == PROVIDER_MOCK
+        else "complete"
+    )
     validation_error = result.validation_error
     structured_response = result.structured_response
     if structured_response is not None:
@@ -117,6 +156,24 @@ def _result_payload(result, allowed_image_ids: list[int]) -> tuple[str, dict[str
     elif validation_error:
         status = "failed"
 
+    analysis_attempts = [
+        {
+            "status": attempt.status,
+            "provider": attempt.provider,
+            "diagnostic": attempt.diagnostic,
+            "created_at": attempt.attempted_at.isoformat(),
+        }
+        for attempt in result.preceding_attempts
+    ]
+    analysis_attempts.append(
+        {
+            "status": status,
+            "provider": result.provider,
+            "diagnostic": validation_error if status == "failed" else None,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+    )
+
     return status, {
         "status": status,
         "provider": result.provider,
@@ -130,6 +187,7 @@ def _result_payload(result, allowed_image_ids: list[int]) -> tuple[str, dict[str
         "validation_error": validation_error,
         "structured_response": structured_response,
         "raw_response": parsed_raw,
+        "analysis_attempts": analysis_attempts,
     }
 
 
@@ -140,8 +198,12 @@ def run_experiment(
     use_azure: bool,
     seed: int,
     operator: str,
+    asset_set: str = "pilot",
+    repeat_runs: int = 1,
 ) -> dict[str, Any]:
-    rows = _load_manifest(manifest_path)
+    if repeat_runs < 1:
+        raise ExperimentError("--repeat-runs must be at least 1.")
+    rows = _load_manifest(manifest_path, asset_set)
     if use_azure:
         missing = _missing_azure_env()
         if missing:
@@ -157,7 +219,8 @@ def run_experiment(
     from app.services.ai_analysis import analyze_observation_images
     from app.services.providers.azure_openai_provider import (
         PROMPT_SETTINGS,
-        analysis_prompt_sha256,
+        analysis_prompt_template_sha256,
+        analysis_rendered_request_sha256,
     )
 
     Base.metadata.create_all(bind=engine)
@@ -166,7 +229,13 @@ def run_experiment(
     model_deployment = (
         settings.azure_openai_deployment if use_azure else "mock"
     ) or "mock"
-    prompt_sha256 = analysis_prompt_sha256(model_deployment)
+    prompt_template_sha256 = analysis_prompt_template_sha256(model_deployment)
+    session_settings = {
+        "mode": "azure" if use_azure else "mock",
+        "seed": seed,
+        "asset_set": asset_set,
+        "request_settings": PROMPT_SETTINGS,
+    }
     rng = random.Random(seed)
     created = 0
     skipped = 0
@@ -181,74 +250,92 @@ def run_experiment(
             if asset is None:
                 asset = ExperimentAsset(
                     external_asset_id=str(row["asset_id"]),
+                    site_label=_parse_site_label(row.get("site_label")),
                     site_id=_parse_site_id(row.get("site_id")),
                     notes=str(row.get("notes", "") or ""),
                 )
                 db.add(asset)
                 db.flush()
             else:
+                if "site_label" in row:
+                    asset.site_label = _parse_site_label(row.get("site_label"))
                 asset.site_id = _parse_site_id(row.get("site_id")) or asset.site_id
                 asset.notes = str(row.get("notes", asset.notes or "") or "")
                 db.flush()
 
-            order = list(CONDITIONS)
-            rng.shuffle(order)
-            for run_order, condition in enumerate(order, start=1):
-                existing = (
-                    db.query(AssessmentSession)
-                    .filter(
-                        AssessmentSession.asset_id == asset.id,
-                        AssessmentSession.condition == condition,
+            for run_index in range(repeat_runs):
+                order = list(CONDITIONS)
+                rng.shuffle(order)
+                for run_order, condition in enumerate(order, start=1):
+                    existing = (
+                        db.query(AssessmentSession)
+                        .filter(
+                            AssessmentSession.asset_id == asset.id,
+                            AssessmentSession.condition == condition,
+                            AssessmentSession.run_index == run_index,
+                        )
+                        .one_or_none()
                     )
-                    .one_or_none()
-                )
-                if existing is not None:
-                    skipped += 1
-                    continue
+                    if existing is not None:
+                        skipped += 1
+                        continue
 
-                image_paths, image_ids = _condition_paths_and_ids(
-                    asset.id,
-                    row,
-                    manifest_path,
-                    condition,
-                )
-                result = analyze_observation_images(
-                    image_paths,
-                    notes=asset.notes,
-                    image_ids=image_ids,
-                )
-                _, payload = _result_payload(result, image_ids)
-                session = AssessmentSession(
-                    asset_id=asset.id,
-                    condition=AssessmentCondition(condition),
-                    image_ids=image_ids,
-                    prompt_sha256=prompt_sha256,
-                    schema_version=payload["schema_version"],
-                    model_deployment=model_deployment,
-                    settings={
-                        "mode": "azure" if use_azure else "mock",
-                        "seed": seed,
-                        "prompt_settings": PROMPT_SETTINGS,
-                    },
-                    analysis_result=payload,
-                    run_at=datetime.utcnow(),
-                    run_order=run_order,
-                    operator=operator,
-                )
-                db.add(session)
-                db.flush()
-                session.analysis_result_id = session.id
-                db.commit()
-                created += 1
+                    image_paths, image_ids = _condition_paths_and_ids(
+                        asset.id,
+                        row,
+                        manifest_path,
+                        condition,
+                    )
+                    prebuilt_request_sha256 = analysis_rendered_request_sha256(
+                        image_paths,
+                        asset.notes,
+                        image_ids,
+                        model_deployment,
+                    )
+                    result = analyze_observation_images(
+                        image_paths,
+                        notes=asset.notes,
+                        image_ids=image_ids,
+                    )
+                    rendered_request_sha256 = (
+                        result.rendered_request_sha256
+                        or prebuilt_request_sha256
+                    )
+                    _, payload = _result_payload(result, image_ids)
+                    session = AssessmentSession(
+                        asset_id=asset.id,
+                        condition=AssessmentCondition(condition),
+                        run_index=run_index,
+                        image_ids=image_ids,
+                        prompt_template_sha256=prompt_template_sha256,
+                        rendered_request_sha256=rendered_request_sha256,
+                        schema_version=payload["schema_version"],
+                        model_deployment=model_deployment,
+                        settings=session_settings,
+                        analysis_result=payload,
+                        run_at=datetime.utcnow(),
+                        run_order=run_order,
+                        operator=operator,
+                    )
+                    db.add(session)
+                    db.flush()
+                    session.analysis_result_id = session.id
+                    db.commit()
+                    created += 1
+            # A fully resumed asset has no new session commit to persist metadata.
+            db.commit()
 
         summary = {
             "assets": db.query(ExperimentAsset).count(),
             "sessions": db.query(AssessmentSession).count(),
             "created_sessions": created,
             "skipped_sessions": skipped,
+            "selected_assets": len(rows),
+            "asset_set": asset_set,
+            "repeat_runs": repeat_runs,
             "seed": seed,
             "mode": "azure" if use_azure else "mock",
-            "prompt_sha256": prompt_sha256,
+            "prompt_template_sha256": prompt_template_sha256,
         }
     finally:
         db.close()
@@ -261,6 +348,21 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--db-path", type=Path, default=REPO_ROOT / "data" / "heritagerisk.db")
     parser.add_argument("--seed", type=int, default=20260723)
     parser.add_argument("--operator", default=os.environ.get("USER", "experiment"))
+    parser.add_argument(
+        "--repeat-runs",
+        type=int,
+        default=1,
+        help="Run each asset/condition N times with zero-based run indices.",
+    )
+    parser.add_argument(
+        "--asset-set",
+        choices=ASSET_SETS,
+        default="pilot",
+        help=(
+            "Run the pilot assets (default), held-out assets, or both sets "
+            "from a split JSON manifest."
+        ),
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--mock", action="store_true", help="Use offline mock analysis.")
     mode.add_argument("--azure", action="store_true", help="Use live Azure analysis.")
@@ -276,6 +378,8 @@ def main() -> int:
             use_azure=bool(args.azure),
             seed=args.seed,
             operator=args.operator,
+            asset_set=args.asset_set,
+            repeat_runs=args.repeat_runs,
         )
     except ExperimentError as exc:
         print(str(exc), file=sys.stderr)

@@ -131,9 +131,10 @@ deployment environment variables.
 `AZURE_OPENAI_ENABLED=true` and all Azure variables are present. It prints the
 structured persisted result, latency, deployment id, and validation status, and
 exits nonzero if the app falls back to mock or validation fails. Invalid schema
-payloads retain sanitized raw data; transport/configuration fallbacks retain
-only the clearly labelled mock state, not the failed Azure attempt or
-diagnostic.
+payloads retain sanitized raw data. Transport, configuration, import, image
+preparation, and API failures append a failed Azure analysis record with a fixed
+sanitized diagnostic and timestamp, then append the clearly labelled mock
+fallback as a separate record. The verifier prints this ordered attempt history.
 
 Every upload route uses one shared image helper. It accepts JPEG, PNG, and WEBP
 files up to 10 MiB only when the leading signature matches the suffix, requires
@@ -232,7 +233,8 @@ backend/
     ├── auth.py                 # Reviewer session, scrypt password, and CSRF helpers
     ├── config.py               # Env-var settings, .env loading
     ├── database.py             # SQLAlchemy engine, session, startup migration
-    ├── models.py               # ORM: Site, Observation, ObservationImage, RiskCase
+    ├── models.py               # ORM: workflow, AI-attempt, case, event, experiment rows
+    ├── provider_identity.py    # Canonical Azure/mock/unknown classifier
     ├── provenance.py           # Immutable contributor/case snapshot builders
     ├── risk.py                 # Rule-based risk scoring
     ├── reports.py              # Markdown report generator

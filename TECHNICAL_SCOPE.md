@@ -29,11 +29,42 @@ Core models:
   `reviewed_by`, immutable `contributor_original` JSON, separate AI proposal
   fields/raw JSON, and a separate reviewer-decision JSON record.
 - `ObservationImage`: one or more uploaded images linked to an observation.
+- `AIAnalysisRecord`: ordered status/provider/timestamp metadata for each
+  analysis result and any operational Azure failure preceding mock fallback.
 - `RiskCase`: case linked one-to-one with an observation, with `finalized_by`,
   stored score/band, and an immutable `final_snapshot` JSON containing reviewer
   identities, accepted evidence, and exact scoring arithmetic.
+- `ExperimentAsset`: research-only physical asset with an external id,
+  optional redacted `site_label`, optional site relation, and notes.
+- `AssessmentSession`: research-only paired-condition analysis result with
+  a zero-based `run_index`, image ids, separate template/configuration and
+  rendered-request SHA-256 values, run order, settings, and operator. Its unique
+  key is
+  `(asset_id, condition, run_index)`.
 
-The application uses `Base.metadata.create_all()` plus a small idempotent SQLite startup helper. The helper checks `PRAGMA table_info`, adds missing review/provenance/identity columns, and backfills legacy single-image records without duplicating them. It cannot reconstruct contributor originals, reviewer identities, or final case details that were never stored, so those fields remain `NULL` for older rows. It is not a general migration framework.
+The application uses `Base.metadata.create_all()` plus a focused idempotent
+SQLite startup helper. The helper checks `PRAGMA table_info`, adds missing
+review/provenance/identity columns, and backfills legacy single-image records
+without duplicating them. It adds nullable experiment `site_label` without
+fabricating old labels. Because SQLite cannot drop the legacy two-column
+assessment-session uniqueness constraint, the helper transactionally rebuilds
+only that table, preserving its rows and ids at `run_index = 0`, then installs
+the three-column constraint. A separate guarded migration renames the legacy
+`prompt_sha256` column to `prompt_template_sha256` in place and adds nullable
+`rendered_request_sha256`; historical values remain `NULL` because the dynamic
+request cannot be reconstructed. It cannot
+reconstruct contributor originals, reviewer identities, final case details, or
+site labels that were never stored. It is not a general migration framework.
+
+New experiment sessions use two prompt-provenance hashes.
+`prompt_template_sha256` covers the rendered system prompt, model deployment,
+and the request settings. `rendered_request_sha256` covers the canonical final
+Azure-shaped request for that session, including dynamic notes and image
+content. The application stores the hashes, not the raw request payload. Azure
+mode transmits that payload; mock mode records only the hash of the request that
+would have been built. The shared request settings currently contain only
+`max_completion_tokens`; they exclude temperature and schema-version placeholders
+because those values are not passed to the Azure client.
 
 ## Current Pipeline
 
@@ -65,6 +96,8 @@ Public submission path:
    - Only allowed when status is ApprovedForAI
    - Azure OpenAI Vision runs when enabled and configured
    - Mock analyzer is used when Azure is disabled or unavailable
+   - Operational Azure failure metadata is stored before the separate mock
+     result; malformed/schema-invalid output remains one failed result
    - All attached images plus site context are processed together
    - AI tags, severity, summary, uncertainty, confidence, provider, recommended action, and raw response are stored separately from the current human-reviewed values
    - Reviewer edit, accept, and reject routes do not rewrite that AI proposal
@@ -132,7 +165,10 @@ observation.human_review_status == ApprovedForAI
 
 If the observation is `Pending`, `Rejected`, or `Sensitive`, the endpoint returns `403 Forbidden` before Azure or mock analysis runs.
 
-Azure errors must fall back to mock analysis. The app must remain usable with `AZURE_OPENAI_ENABLED=false` and no credentials.
+Operational Azure errors append a failed attempt with a fixed sanitized
+diagnostic, then fall back to a separately recorded mock analysis. Malformed
+JSON and strict schema failures remain failed without a mock result. The app
+must remain usable with `AZURE_OPENAI_ENABLED=false` and no credentials.
 
 The mock analyzer scans notes and does not inspect image pixels. The UI and reports label that limitation explicitly.
 
@@ -187,68 +223,4 @@ The HTML route renders a structured evidence document; it does not merely displa
 
 ## Manual Routing Policy
 
-HeritageRisk AI does not auto-route official reports.
-
-The `routed_to` value is a human-entered documentation field. The app does not send reports to councils, site owners, authorities, email systems, messaging systems, or external services.
-
-## Deployment Boundary
-
-The current build is a local single-reviewer competition demo. Reviewer actions
-use one `REVIEWER_USERNAME` plus scrypt `REVIEWER_PASSWORD_HASH`, with an
-eight-hour signed session. `SESSION_SECRET_KEY` should be configured; otherwise
-the generated process-ephemeral secret invalidates sessions at restart. All form
-POSTs use double-submit CSRF validation. Public submission remains logged out and
-always enters `Pending`.
-
-This is not a multi-user or production authentication system. There are no
-individual accounts or roles, login throttling, password recovery, per-status
-updater roles, or full append-only event history for every edit. Local HTTP
-leaves the session cookie without `Secure`. Uploaded images and read-only
-case/report routes remain public. Historical identity columns can be `NULL`, and
-report GET routes regenerate files and write `report_path`. See
-[competition_baseline.md](competition_baseline.md)
-for the full verified limitation set.
-
-## Local Development Commands
-
-Install dependencies:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
-```
-
-Run the app:
-
-```bash
-cd backend
-python3 run.py
-```
-
-Run tests:
-
-```bash
-cd backend
-AZURE_OPENAI_ENABLED=false pytest
-```
-
-Seed demo data:
-
-```bash
-cd backend
-python3 -m app.seed
-```
-
-The dashboard also includes a **Seed Demo Data** button that posts to `/seed`.
-
-## Non-Negotiable Constraints
-
-1. AI output is visible-risk triage only.
-2. The public workflow must preserve its review-before-AI gate.
-3. The primary Risk Case route must preserve human AI-output finalization.
-4. The risk score must remain explainable and rule-based.
-5. The mock analyzer must work without credentials or network access.
-6. The app must not hardcode secrets.
-7. Official reports must include the safety warning.
-8. The app must not auto-route official reports or claim structural safety conclusions.
+HeritageRi

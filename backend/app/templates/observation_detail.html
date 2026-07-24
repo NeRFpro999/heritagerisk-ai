@@ -133,8 +133,9 @@
 
     <dt>AI Provider</dt>
     <dd>
-      {% if obs.ai_provider == "azure_openai" %}Azure OpenAI
-      {% elif obs.ai_provider == "mock" %}Mock
+      {% set provider_kind = provider_identity(obs.ai_provider) %}
+      {% if provider_kind == "azure" %}Azure OpenAI ({{ obs.ai_provider }})
+      {% elif provider_kind == "mock" %}Mock
       {% elif obs.ai_provider %}{{ obs.ai_provider }}
       {% else %}Not available{% endif %}
     </dd>

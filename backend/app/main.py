@@ -34,6 +34,7 @@ from app.case_status import (
 )
 from app.database import apply_sqlite_startup_migrations, engine, get_db, Base
 from app.models import (
+    AIAnalysisRecord,
     CaseEvent,
     HumanReviewStatus,
     Observation,
@@ -42,16 +43,23 @@ from app.models import (
     Site,
 )
 from app.provenance import (
+    analysis_attempt_history,
     build_case_snapshot,
     build_contributor_original,
     case_snapshot,
     contributor_original,
+)
+from app.provider_identity import (
+    PROVIDER_AZURE,
+    PROVIDER_MOCK,
+    provider_identity,
 )
 from app.risk import ALL_TAGS, TAG_LABELS
 from app.reports import generate_report
 from app.config import settings
 from app.services.ai_analysis import (
     AIAnalysisResult,
+    AZURE_PROVIDER_DIAGNOSTIC,
     analyze_observation_images,
 )
 
@@ -93,6 +101,7 @@ app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 templates.env.globals["TAG_LABELS"] = TAG_LABELS
 templates.env.globals["current_reviewer"] = current_reviewer
+templates.env.globals["provider_identity"] = provider_identity
 
 REVIEW_ACTION_STATUSES = (
     HumanReviewStatus.APPROVED_FOR_AI,
@@ -453,6 +462,21 @@ def apply_ai_analysis_result(
     observation: Observation,
     result: AIAnalysisResult,
 ) -> None:
+    for attempt in result.preceding_attempts:
+        attempted_at = attempt.attempted_at
+        if attempted_at.tzinfo is not None:
+            attempted_at = (
+                attempted_at.astimezone(timezone.utc).replace(tzinfo=None)
+            )
+        observation.analysis_records.append(
+            AIAnalysisRecord(
+                status=attempt.status,
+                provider=attempt.provider,
+                diagnostic=attempt.diagnostic,
+                created_at=attempted_at,
+            )
+        )
+
     allowed_image_ids = {image.id for image in observation.images}
     raw_payload = result.structured_response
     if raw_payload is None and result.raw_response:
@@ -490,20 +514,39 @@ def apply_ai_analysis_result(
                 "raw_payload": raw_payload,
             }
         )
+        observation.analysis_records.append(
+            AIAnalysisRecord(
+                status="failed",
+                provider=result.provider,
+                diagnostic=validation_error,
+            )
+        )
         return
 
+    identity = provider_identity(result.provider)
     azure_failed = (
-        result.provider == "azure_openai"
+        identity == PROVIDER_AZURE
+        and result.structured_response is None
         and result.confidence == 0
         and result.damage_tags == ["other"]
     )
 
     if azure_failed:
         observation.ai_analysis_status = "failed"
-    elif result.provider == "mock":
+    elif identity == PROVIDER_MOCK:
         observation.ai_analysis_status = "mock"
     else:
         observation.ai_analysis_status = "complete"
+
+    observation.analysis_records.append(
+        AIAnalysisRecord(
+            status=observation.ai_analysis_status,
+            provider=result.provider,
+            diagnostic=(
+                AZURE_PROVIDER_DIAGNOSTIC if azure_failed else None
+            ),
+        )
+    )
 
     observation.ai_summary = result.summary
     observation.ai_confidence = result.confidence
@@ -1301,6 +1344,7 @@ def observation_ai_review(
         .options(
             joinedload(Observation.site),
             selectinload(Observation.images),
+            selectinload(Observation.analysis_records),
         )
         .filter(Observation.id == obs_id)
         .first()
@@ -1334,6 +1378,7 @@ def observation_ai_review(
             "final_tags": final_tags,
             "ai_result_v2": ai_schema_v2_data(obs),
             "ai_indicators": ai_v2_indicators(obs),
+            "analysis_attempts": analysis_attempt_history(obs),
             "contributor_original": contributor_original(
                 obs.contributor_original
             ),

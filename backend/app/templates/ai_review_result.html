@@ -95,6 +95,23 @@
     </div>
     {% endif %}
 
+    {% if analysis_attempts %}
+    <h3>Analysis Attempt History</h3>
+    <ol class="event-list">
+      {% for attempt in analysis_attempts %}
+      <li>
+        <strong>{{ attempt.status | upper }}</strong>
+        via {{ attempt.provider }}
+        {% if attempt.created_at %}at {{ attempt.created_at }}{% endif %}
+        {% if attempt.status == "mock" %}
+        <span>— labelled mock fallback</span>
+        {% endif %}
+        {% if attempt.diagnostic %}<p>{{ attempt.diagnostic }}</p>{% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+
     <dl class="meta">
       {% if ai_result_v2 %}
       <dt>Schema</dt>

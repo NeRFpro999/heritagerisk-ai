@@ -35,4 +35,18 @@ The selected experiment manifest is intended for:
 
 ```bash
 python3 scripts/run_experiment.py research/corpus/experiment_manifest.json --mock
+python3 scripts/run_experiment.py research/corpus/experiment_manifest.json \
+  --mock --asset-set held_out
+python3 scripts/run_experiment.py research/corpus/experiment_manifest.json \
+  --mock --asset-set all
+python3 scripts/run_experiment.py research/corpus/experiment_manifest.json \
+  --mock --repeat-runs 2
 ```
+
+The default `pilot` selection reads `assets`; `held_out` reads
+`held_out_assets`; `all` combines both. Each created assessment session records
+the chosen set in its settings JSON. The selected manifest's redacted
+`site_label` is stored once on each physical experiment asset and retained in
+both session- and indicator-level result exports.
+`--repeat-runs N` creates run indices `0` through `N - 1` for both conditions
+and resumes without duplicating an existing asset/condition/index session.

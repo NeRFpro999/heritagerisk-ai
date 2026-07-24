@@ -20,9 +20,11 @@ if str(BACKEND_ROOT) not in sys.path:
 FIELDNAMES = [
     "row_type",
     "external_asset_id",
+    "site_label",
     "asset_db_id",
     "session_id",
     "condition",
+    "run_index",
     "indicator_type",
     "evidence_sufficiency",
     "confidence",
@@ -31,7 +33,8 @@ FIELDNAMES = [
     "supporting_evidence",
     "severity_contribution",
     "insufficient_reason",
-    "prompt_sha256",
+    "prompt_template_sha256",
+    "rendered_request_sha256",
     "schema_version",
     "model_deployment",
     "run_order",
@@ -52,12 +55,15 @@ def _base_row(asset, session, result: dict[str, Any]) -> dict[str, Any]:
     structured = result.get("structured_response") or {}
     return {
         "external_asset_id": asset.external_asset_id,
+        "site_label": asset.site_label or "",
         "asset_db_id": asset.id,
         "session_id": session.id,
         "condition": getattr(session.condition, "value", session.condition),
+        "run_index": session.run_index,
         "evidence_sufficiency": structured.get("evidence_sufficiency", ""),
         "insufficient_reason": structured.get("insufficient_reason") or "",
-        "prompt_sha256": session.prompt_sha256,
+        "prompt_template_sha256": session.prompt_template_sha256,
+        "rendered_request_sha256": session.rendered_request_sha256 or "",
         "schema_version": session.schema_version,
         "model_deployment": session.model_deployment,
         "run_order": session.run_order,
@@ -73,15 +79,20 @@ def _base_row(asset, session, result: dict[str, Any]) -> dict[str, Any]:
 def export_results(*, db_path: Path, output_path: Path) -> dict[str, int]:
     os.environ["HERITAGERISK_DB_PATH"] = str(db_path)
 
-    from app.database import SessionLocal
+    from app.database import SessionLocal, apply_sqlite_startup_migrations, engine
     from app.models import AssessmentSession
 
+    apply_sqlite_startup_migrations(engine)
     db = SessionLocal()
     rows: list[dict[str, Any]] = []
     try:
         sessions = (
             db.query(AssessmentSession)
-            .order_by(AssessmentSession.asset_id, AssessmentSession.run_order)
+            .order_by(
+                AssessmentSession.asset_id,
+                AssessmentSession.run_index,
+                AssessmentSession.run_order,
+            )
             .all()
         )
         for session in sessions:

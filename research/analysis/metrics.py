@@ -47,6 +47,20 @@ def load_ai_export(path: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     if missing:
         raise ValueError("AI export missing column(s): " + ", ".join(sorted(missing)))
     export = export.rename(columns={"external_asset_id": "asset_id"})
+    if "site_label" not in export:
+        export["site_label"] = ""
+    else:
+        export["site_label"] = (
+            export["site_label"].fillna("").astype(str).str.strip()
+        )
+    if "run_index" not in export:
+        export["run_index"] = 0
+    else:
+        export["run_index"] = (
+            pd.to_numeric(export["run_index"], errors="coerce")
+            .fillna(0)
+            .astype(int)
+        )
     sessions = export[export["row_type"] == "session"].copy()
     indicators = export[export["row_type"] == "indicator"].copy()
     if "confidence" in indicators:
@@ -381,17 +395,34 @@ def _double_labelled_pairs(reference: pd.DataFrame):
                 yield (reviewer_a, reviewer_b), merged
 
 
-def repeatability(ai_indicators: pd.DataFrame) -> pd.DataFrame:
+def repeatability(
+    ai_indicators: pd.DataFrame,
+    sessions: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Agreement across repeated sessions sharing asset_id and condition."""
-    if "session_id" not in ai_indicators:
+    if "session_id" not in ai_indicators and (
+        sessions is None or "session_id" not in sessions
+    ):
         return pd.DataFrame()
+
+    run_sets: dict[tuple[str, str], dict[str, set[str]]] = {}
+    if sessions is not None and "session_id" in sessions:
+        for session in sessions.itertuples():
+            group_key = (str(session.asset_id), str(session.condition))
+            run_sets.setdefault(group_key, {}).setdefault(
+                str(session.session_id),
+                set(),
+            )
+    for indicator in ai_indicators.itertuples():
+        group_key = (str(indicator.asset_id), str(indicator.condition))
+        run_sets.setdefault(group_key, {}).setdefault(
+            str(indicator.session_id),
+            set(),
+        ).add(str(indicator.indicator_type))
+
     rows = []
-    grouped = ai_indicators.groupby(["asset_id", "condition"], sort=True)
-    for (asset_id, condition), group in grouped:
-        sets = [
-            set(session_group["indicator_type"].astype(str))
-            for _, session_group in group.groupby("session_id")
-        ]
+    for (asset_id, condition), session_sets in sorted(run_sets.items()):
+        sets = list(session_sets.values())
         if len(sets) < 2:
             continue
         exact_pairs = []
@@ -414,10 +445,23 @@ def repeatability(ai_indicators: pd.DataFrame) -> pd.DataFrame:
 
 
 def site_concentration(sessions: pd.DataFrame) -> dict[str, Any]:
-    if "site_label" in sessions and sessions["site_label"].any():
-        counts = sessions[["asset_id", "site_label"]].drop_duplicates()["site_label"].value_counts()
-        return {"site_counts": counts.to_dict(), "largest_site_asset_share": float(counts.max() / counts.sum())}
-    return {"site_counts": {}, "largest_site_asset_share": np.nan}
+    if sessions.empty or "site_label" not in sessions:
+        return {"site_counts": {}, "largest_site_asset_share": np.nan}
+
+    asset_sites = sessions[["asset_id", "site_label"]].copy()
+    asset_sites["site_label"] = (
+        asset_sites["site_label"].fillna("").astype(str).str.strip()
+    )
+    asset_sites = asset_sites[asset_sites["site_label"] != ""]
+    asset_sites = asset_sites.drop_duplicates(subset=["asset_id"])
+    if asset_sites.empty:
+        return {"site_counts": {}, "largest_site_asset_share": np.nan}
+
+    counts = asset_sites["site_label"].value_counts().sort_index()
+    return {
+        "site_counts": counts.to_dict(),
+        "largest_site_asset_share": float(counts.max() / counts.sum()),
+    }
 
 
 def analyze_experiment(
@@ -428,16 +472,33 @@ def analyze_experiment(
     seed: int = 20260723,
     resamples: int = 10_000,
 ) -> AnalysisOutputs:
-    metrics_df, confusion = condition_metrics(sessions, ai_indicators, reference)
+    primary_sessions = (
+        sessions[sessions["run_index"] == 0]
+        if "run_index" in sessions
+        else sessions
+    )
+    primary_indicators = (
+        ai_indicators[ai_indicators["run_index"] == 0]
+        if "run_index" in ai_indicators
+        else ai_indicators
+    )
+    metrics_df, confusion = condition_metrics(
+        primary_sessions,
+        primary_indicators,
+        reference,
+    )
     deltas, delta_stats = paired_deltas(
-        ai_indicators,
+        primary_indicators,
         reference,
         seed=seed,
         resamples=resamples,
     )
-    confidence_means, reliability = confidence_calibration(ai_indicators, reference)
+    confidence_means, reliability = confidence_calibration(
+        primary_indicators,
+        reference,
+    )
     kappa_df = cohen_kappa(reference)
-    repeatability_df = repeatability(ai_indicators)
+    repeatability_df = repeatability(ai_indicators, sessions)
     n_assets = int(reference["asset_id"].nunique())
     summary = {
         "n_physical_assets": n_assets,

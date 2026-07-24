@@ -36,6 +36,8 @@ Site
 - Lets a reviewer mark an observation as `ApprovedForAI`, `Rejected`, or `Sensitive`.
 - Blocks AI analysis unless a human reviewer has approved the observation.
 - Uses Azure OpenAI Vision when configured, with a mock fallback that works offline.
+- Records an operational Azure failure with a fixed sanitized diagnostic before
+  storing the separate labelled mock fallback.
 - Sends all approved observation images plus reviewed site context to the analyzer.
 - Preserves contributor-original notes, tags, severity, and submission time separately from the editable reviewer working copy and AI proposal.
 - Lets a reviewer compare the AI proposal, edit the final accepted values, or reject the proposal before creating a Risk Case.

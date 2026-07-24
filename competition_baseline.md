@@ -4,10 +4,10 @@ Audit date: 2026-07-24 (Australia/Melbourne)
 Repository: `/Users/emmamuhi/Desktop/heritagerisk-ai`
 Audit mode: local code/test review, no live Azure call, no private-photo audit
 
-This file replaces the historical July baseline with the current verified
-committed state. Resolution references identify the commit that completed the
-behavior; two workflow foundations correctly point to their earlier June/July
-implementation commit rather than to the later integration commits.
+This file replaces the historical July baseline with the current verified code
+state. Resolution references identify the commit that completed earlier
+behavior; a current uncommitted task cites its code and test evidence directly
+instead of inventing a commit hash.
 
 Final verification command:
 
@@ -15,7 +15,7 @@ Final verification command:
 cd backend && AZURE_OPENAI_ENABLED=false pytest -q
 ```
 
-Final verification result: **220 passed, 538 warnings in 121.92s (0:02:01)**.
+Final verification result: **232 passed, 579 warnings in 205.86s (0:03:25)**.
 
 ## Current Implemented Product Workflow
 
@@ -31,6 +31,12 @@ The public workflow is:
 4. AI analysis runs in mock mode by default or Azure mode when explicitly
    configured. New successful proposals use strict schema v2 with per-indicator
    evidence; malformed Azure payloads are stored as failed validation states.
+   Operational Azure failures append a failed attempt with a fixed sanitized
+   diagnostic and timestamp before the labelled mock fallback is stored as a
+   separate attempt. Reviewer and report views show the ordered history.
+   One shared provider-identity classifier recognizes both legacy
+   `azure_openai` and current `azure:<deployment>` values across routes,
+   reports, templates, and scripts.
 5. The primary AI-review page offers accept/edit/reject controls for proposed
    indicators before finalization. The authenticated compatibility finalizer
    and optional indicator fields mean this explicit per-indicator sequence is
@@ -46,18 +52,25 @@ The public workflow is:
 
 - Paired experiment tables and scripts exist for `single_medium` versus
   `three_view` analysis sessions. Experiment sessions are separate from
-  Observations and Risk Cases.
-- Each experiment run records a SHA-256 hash of the static system prompt,
-  deployment, and configured generation settings. Dynamic notes and image-id
-  user content are not hashed, so this is not proof of the exact rendered
-  request.
+  Observations and Risk Cases. The runner can create repeated sessions with
+  zero-based `run_index` values and resumes on the unique
+  `(asset, condition, run_index)` key.
+- Each new experiment session records two SHA-256 values. The template hash
+  covers the rendered system prompt, deployment, and settings actually used by
+  the request builder. The rendered-request hash covers the canonical
+  per-session Azure-shaped payload, including dynamic notes and image content,
+  without storing that raw payload. In mock mode it fingerprints a would-be
+  request; only Azure mode transmits it.
 - Corpus audit scripts can build metadata manifests, detect duplicate hashes and
   missing files, summarize asset groups, and select complete cleared asset groups
   for experiment manifests. Raw photos are not committed.
 - Research analysis functions compute precision/recall/F1, unsupported-claim
   rate, insufficient-evidence rate, paired deltas, Wilcoxon tests, effect size,
   bootstrap confidence intervals, confidence calibration, Cohen's kappa, and
-  repeatability from exported CSVs and human-reference labels.
+  repeatability from exported CSVs and human-reference labels. Optional
+  redacted site labels flow from experiment manifests through
+  `ExperimentAsset` and both CSV row types, allowing site counts and
+  largest-site asset share to be calculated once per physical asset.
 
 No real 1,120-photo corpus manifest, live-Azure experiment output, or research
 performance conclusion is committed.
@@ -86,17 +99,20 @@ performance conclusion is committed.
 | Built-in seeded later statuses have no transition events. | STILL OPEN | N/A | `app.seed` assigns case statuses directly and creates no `CaseEvent` rows. Normal reviewer status updates remain transition-enforced, while `scripts/seed_demo.py` separately exercises evented transitions. |
 | Demo database had mock-only, non-image-backed evidence. | RESOLVED as tooling, STILL OPEN as committed data | `e89b79c` | `scripts/seed_demo.py` can rebuild from private `demo_assets/`; tests cover mock seeding. No private demo photos or generated DB are committed. |
 | Live Azure behavior was unverified. | STILL OPEN | N/A | `scripts/verify_azure.py` exists and refuses missing env, but no live Azure result is committed or claimed. |
-| Azure transport/configuration failures are not preserved as failed attempts. | STILL OPEN | N/A | Provider/configuration exceptions are replaced by clearly labelled mock output, so no Azure success is fabricated, but the failed Azure attempt and error state are not retained. Schema-validation failures are preserved separately. |
+| Azure transport/configuration failures are not preserved as failed attempts. | RESOLVED for new application analyses | Current code: `AIAnalysisRecord`, `tests/test_ai_failure_history.py` | Operational configuration/import/image/transport/API failures store an ordered failed Azure record with a fixed sanitized diagnostic and timestamp, followed by a separate `mock` record. The active proposal remains labelled mock. Malformed JSON remains one failed validation record without fallback. |
 | AI output lacked per-indicator evidence and insufficient-evidence outcome. | RESOLVED | `45431d9` | `app/ai_schema.py`, v2 Azure prompt, v2 mock, UI/report rendering, `tests/test_ai_schema_v2.py`. |
 | Invalid Azure schema could be silently coerced. | RESOLVED | `45431d9` | Strict v2 validation stores failed validation state with sanitized raw payload; tests cover invalid indicator type. |
 | Paired experiment data model did not exist. | RESOLVED | `57f9bd0` | `ExperimentAsset`, `AssessmentSession`, migrations, `scripts/run_experiment.py`, `tests/test_experiment_scripts.py`. |
-| Frozen analysis configuration was asserted, not recorded. | PARTLY RESOLVED | `57f9bd0` | Sessions record a consistent hash of the system prompt, deployment, and configured settings. Dynamic notes and image-id user content are excluded, so the exact rendered request is not frozen by this hash. |
+| `select_assets.py` held-out rows could not be consumed directly by the experiment runner. | RESOLVED | Current code: `scripts/run_experiment.py`, `tests/test_experiment_scripts.py` | `--asset-set pilot` (default), `held_out`, and `all` select the corresponding split rows; each new `AssessmentSession.settings` records the selected set. Tests cover 2 pilot and 3 held-out assets. |
+| Experiment export dropped `site_label`, leaving site concentration empty/NaN. | RESOLVED | Current code: `ExperimentAsset.site_label`, `scripts/run_experiment.py`, `scripts/export_results.py`, `research/analysis/metrics.py`, `tests/test_experiment_scripts.py`, `tests/test_research_analysis.py` | The nullable redacted label is migrated and persisted, emitted on session and indicator rows, retained by the loader, and counted once per physical asset. A three-asset/two-site regression verifies `{site-north: 2, site-south: 1}` and a non-NaN Markdown share. |
+| The `(asset_id, condition)` constraint blocked native repeatability runs. | RESOLVED | Current code: `AssessmentSession.run_index`, `scripts/run_experiment.py`, `scripts/export_results.py`, `research/analysis/metrics.py`, `tests/test_database_migration.py`, `tests/test_experiment_scripts.py`, `tests/test_research_analysis.py` | SQLite migration preserves legacy sessions at index 0 and replaces the old constraint with `(asset_id, condition, run_index)`. `--repeat-runs 2` creates four sessions for one asset, resumes without duplicates, exports both indices, and feeds hand-computed agreement through the loader. Primary condition metrics use index 0; repeatability uses all runs. |
+| E11: Frozen analysis configuration was asserted, not recorded. | RESOLVED | Current code: `analysis_prompt_template_sha256`, `analysis_rendered_request_sha256`, `AssessmentSession.prompt_template_sha256`, `AssessmentSession.rendered_request_sha256`, `scripts/run_experiment.py`, `scripts/export_results.py`, `tests/test_ai.py`, `tests/test_experiment_scripts.py`, `tests/test_database_migration.py` | New sessions store a template/configuration hash and a per-session canonical rendered-request hash. `PROMPT_SETTINGS` contains only transmitted request arguments (`max_completion_tokens`); temperature and schema version are not recorded as request settings because they are not sent. The raw request is not stored. Legacy `prompt_sha256` values migrate without recomputation to the renamed template field while the unreconstructable rendered hash remains `NULL`. |
 | Experiment sessions could enter the community workflow. | RESOLVED | `57f9bd0` | Experiment models/scripts are separate from Observation/RiskCase routes; tests assert session behavior only. |
 | research/ was empty while corpus audit claims existed. | RESOLVED as tooling/schema | `2d4af01` | `research/corpus/MANIFEST.schema.json`, `scripts/audit_corpus.py`, `scripts/select_assets.py`, `tests/test_corpus_scripts.py`. STILL OPEN for real 1,120-photo corpus output. |
 | Statistical analysis code for STS metrics was absent. | RESOLVED as code | `6c30724` | `research/analysis/metrics.py`, `scripts/analyze_experiment.py`, `tests/test_research_analysis.py`. STILL OPEN for real-corpus results. |
 | Corpus photos, exact site locations, and sensitive evidence privacy were not access-controlled. | STILL OPEN | N/A | Upload URLs and read-only evidence routes remain public; sensitive content is hidden in selected templates only. Raw research photos must stay outside Git. |
 | Reviewer identity was not individual/account-level. | STILL OPEN | N/A | One shared reviewer credential is implemented; no user accounts, roles, recovery, or throttling. |
-| Complete append-only audit history did not exist. | STILL OPEN | N/A | Status transitions have `CaseEvent`; review edits, every field change, prior AI proposals, and report GET writes are not complete append-only events. |
+| Complete append-only audit history did not exist. | STILL OPEN | N/A | Status transitions have `CaseEvent`, and analyses now have ordered attempt metadata. Review edits, every field change, complete prior AI proposal revisions, and report GET writes are not complete append-only events. |
 | Working evidence could change after AI analysis without invalidating the current proposal. | STILL OPEN | N/A | Layers remain separate, but no automatic invalidation/rerun requirement exists for post-analysis working edits before finalization. |
 | Older rows cannot reconstruct provenance. | STILL OPEN by design | N/A | Additive migrations leave historical unknowns as `NULL`; the app does not fabricate old originals, identities, or snapshots. |
 | Risk weights/thresholds lacked validation. | STILL OPEN | N/A | Scoring remains a transparent heuristic with tests, not an empirically validated conservation-risk model. |
@@ -120,18 +136,19 @@ performance conclusion is committed.
    anyone who knows the URL.
 7. Sensitive observations are suppressed in selected UI/report locations, but
    files are not access-controlled.
-8. Normal status transitions are evented, but built-in seeded later statuses
-   have no events; review edits, AI reruns, and report generation are not a
-   complete append-only audit log.
+8. Normal status transitions and AI attempt outcomes are evented, but built-in
+   seeded later statuses have no events; review edits, complete prior AI
+   proposal revisions, and report generation are not a complete append-only
+   audit log.
 9. Live Azure operation is implemented and mock-tested, but no live Azure
-   response is committed as evidence. Transport/configuration failures fall
-   back to clearly labelled mock output without retaining the failed attempt.
+   response is committed as evidence.
 10. Public report GET routes regenerate files and commit `report_path`.
 11. No real corpus manifest, raw image dataset, human labels, completed paired
    experiment output, or statistical conclusion is committed.
-12. The recorded experiment prompt hash excludes dynamic notes and image-id
-    request content; held-out consumption, in-run repeat sessions, recorded
-    blinding, and site-concentration export remain incomplete.
+12. Experiment blinding is managed externally and is not recorded. Legacy
+    experiment rows retain their earlier hash under the renamed template field
+    without recomputation and have
+    `rendered_request_sha256 = NULL`.
 13. Risk scoring weights and thresholds are unvalidated heuristics.
 14. Historical database rows can have `NULL` provenance and identity fields.
 15. There is no production deployment, HTTPS, backup, malware scanning, rate
@@ -147,11 +164,14 @@ performance conclusion is committed.
 - Do not claim every review has a timestamp/event, every seeded status has a
   transition event, or report GET routes are read-only.
 - Do not claim Azure has been live-verified in the committed evidence.
-- Do not claim Azure transport/configuration failures retain a failed-attempt
-  record.
+- Do not claim AI attempt metadata is a complete immutable copy of every prior
+  AI response or exception body.
 - Do not claim a 1,120-photo corpus or real statistical results exist in Git.
-- Do not claim the prompt hash covers the exact rendered request.
+- Do not claim the raw rendered request is stored, that a mock fingerprint was
+  transmitted to Azure, that legacy sessions have a rendered-request hash, or
+  that experiment blinding is recorded.
 - Do not claim the score is a validated probability, urgency, structural-safety
   diagnosis, or professional recommendation.
-- Do not claim the audit trail captures every edit and every prior AI proposal.
+- Do not claim the audit trail captures every edit and every complete prior AI
+  proposal.
 - Do not claim historical rows have reconstructed provenance.

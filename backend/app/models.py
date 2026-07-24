@@ -87,6 +87,12 @@ class Observation(Base):
         cascade="all, delete-orphan",
         order_by="ObservationImage.created_at",
     )
+    analysis_records: Mapped[list["AIAnalysisRecord"]] = relationship(
+        "AIAnalysisRecord",
+        back_populates="observation",
+        cascade="all, delete-orphan",
+        order_by="AIAnalysisRecord.id",
+    )
     risk_case: Mapped["RiskCase"] = relationship(
         "RiskCase", back_populates="observation", uselist=False, cascade="all, delete-orphan"
     )
@@ -132,6 +138,31 @@ class ObservationImage(Base):
 
     observation: Mapped["Observation"] = relationship(
         "Observation", back_populates="images"
+    )
+
+
+class AIAnalysisRecord(Base):
+    __tablename__ = "ai_analysis_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    observation_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("observations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    provider: Mapped[str] = mapped_column(String(200), nullable=False)
+    diagnostic: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+    )
+
+    observation: Mapped["Observation"] = relationship(
+        "Observation",
+        back_populates="analysis_records",
     )
 
 
@@ -193,6 +224,7 @@ class ExperimentAsset(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     external_asset_id: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    site_label: Mapped[str | None] = mapped_column(String(200), nullable=True)
     site_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("sites.id"), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -201,14 +233,22 @@ class ExperimentAsset(Base):
         "AssessmentSession",
         back_populates="asset",
         cascade="all, delete-orphan",
-        order_by="AssessmentSession.run_order",
+        order_by=lambda: (
+            AssessmentSession.run_index,
+            AssessmentSession.run_order,
+        ),
     )
 
 
 class AssessmentSession(Base):
     __tablename__ = "assessment_sessions"
     __table_args__ = (
-        UniqueConstraint("asset_id", "condition", name="uq_assessment_asset_condition"),
+        UniqueConstraint(
+            "asset_id",
+            "condition",
+            "run_index",
+            name="uq_assessment_asset_condition_run_index",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
@@ -228,10 +268,20 @@ class AssessmentSession(Base):
         ),
         nullable=False,
     )
+    run_index: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     image_ids: Mapped[list[int]] = mapped_column(JSON(none_as_null=True), nullable=False)
     analysis_result_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     analysis_result: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
-    prompt_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_template_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    rendered_request_sha256: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
     schema_version: Mapped[str] = mapped_column(String(20), nullable=False)
     model_deployment: Mapped[str] = mapped_column(String(200), nullable=False)
     settings: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)

@@ -2,17 +2,19 @@
 AI image analysis — single entry point for the app.
 
   AZURE_OPENAI_ENABLED=false (default)  → mock result, no API call
-  AZURE_OPENAI_ENABLED=true, no creds  → mock result with warning prefix
+  AZURE_OPENAI_ENABLED=true, no creds  → failed attempt + mock fallback
   AZURE_OPENAI_ENABLED=true, creds set → Azure OpenAI Vision
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 
 from app.config import settings
+from app.provider_identity import azure_provider_name
 
 # Must match the taxonomy in azure_openai_provider.py
 ALLOWED_TAGS: list[str] = [
@@ -26,6 +28,38 @@ ALLOWED_TAGS: list[str] = [
     "fire_damage",
     "other",
 ]
+
+AZURE_CONFIGURATION_DIAGNOSTIC = (
+    "configuration_error: required Azure OpenAI settings are missing."
+)
+AZURE_IMPORT_DIAGNOSTIC = (
+    "import_error: Azure OpenAI client dependency is unavailable."
+)
+AZURE_IMAGE_DIAGNOSTIC = (
+    "image_error: one or more images could not be prepared for Azure analysis."
+)
+AZURE_NO_IMAGES_DIAGNOSTIC = (
+    "image_error: no images were available for Azure analysis."
+)
+AZURE_TRANSPORT_DIAGNOSTIC = (
+    "transport_error: the Azure OpenAI request could not be completed."
+)
+AZURE_API_DIAGNOSTIC = (
+    "api_error: Azure OpenAI rejected or failed the request."
+)
+AZURE_PROVIDER_DIAGNOSTIC = (
+    "provider_error: Azure analysis failed before producing a response."
+)
+
+
+@dataclass(frozen=True)
+class AIAnalysisAttempt:
+    status: str
+    provider: str
+    diagnostic: str | None
+    attempted_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
 
 @dataclass
@@ -43,6 +77,8 @@ class AIAnalysisResult:
     schema_version: str = "2"
     structured_response: dict | None = None
     validation_error: str | None = None
+    preceding_attempts: list[AIAnalysisAttempt] = field(default_factory=list)
+    rendered_request_sha256: str | None = None
 
 
 def _mock_analyze(
@@ -164,6 +200,26 @@ def _mock_analyze(
     )
 
 
+def _mock_after_azure_failure(
+    image_path: str,
+    notes: str | None,
+    image_ids: list[int] | None,
+    *,
+    deployment: object,
+    diagnostic: str,
+) -> AIAnalysisResult:
+    """Return mock output carrying one sanitized preceding Azure failure."""
+    result = _mock_analyze(image_path, notes, image_ids)
+    result.preceding_attempts.append(
+        AIAnalysisAttempt(
+            status="failed",
+            provider=azure_provider_name(deployment),
+            diagnostic=diagnostic,
+        )
+    )
+    return result
+
+
 def analyze_observation_image(
     image_path: str,
     notes: str | None = None,
@@ -178,12 +234,13 @@ def analyze_observation_image(
         return _mock_analyze(image_path, notes, [image_id] if image_id else None)
 
     if not settings.azure_credentials_present:
-        result = _mock_analyze(image_path, notes, [image_id] if image_id else None)
-        result.summary = (
-            "Mock analysis used because Azure AI is disabled or unavailable. "
-            + result.summary
+        return _mock_after_azure_failure(
+            image_path,
+            notes,
+            [image_id] if image_id else None,
+            deployment=getattr(settings, "azure_openai_deployment", ""),
+            diagnostic=AZURE_CONFIGURATION_DIAGNOSTIC,
         )
-        return result
 
     try:
         from app.services.providers.azure_openai_provider import (
@@ -191,8 +248,22 @@ def analyze_observation_image(
         )
 
         return AzureOpenAIImageAnalyzer().analyze(image_path, notes, image_id=image_id)
+    except ImportError:
+        return _mock_after_azure_failure(
+            image_path,
+            notes,
+            [image_id] if image_id else None,
+            deployment=getattr(settings, "azure_openai_deployment", ""),
+            diagnostic=AZURE_IMPORT_DIAGNOSTIC,
+        )
     except Exception:  # noqa: BLE001
-        return _mock_analyze(image_path, notes, [image_id] if image_id else None)
+        return _mock_after_azure_failure(
+            image_path,
+            notes,
+            [image_id] if image_id else None,
+            deployment=getattr(settings, "azure_openai_deployment", ""),
+            diagnostic=AZURE_PROVIDER_DIAGNOSTIC,
+        )
 
 
 def analyze_observation_images(
@@ -208,12 +279,13 @@ def analyze_observation_images(
         return _mock_analyze(primary_image_path, notes, image_ids)
 
     if not settings.azure_credentials_present:
-        result = _mock_analyze(primary_image_path, notes, image_ids)
-        result.summary = (
-            "Mock analysis used because Azure AI is disabled or unavailable. "
-            + result.summary
+        return _mock_after_azure_failure(
+            primary_image_path,
+            notes,
+            image_ids,
+            deployment=getattr(settings, "azure_openai_deployment", ""),
+            diagnostic=AZURE_CONFIGURATION_DIAGNOSTIC,
         )
-        return result
 
     try:
         from app.services.providers.azure_openai_provider import (
@@ -221,5 +293,19 @@ def analyze_observation_images(
         )
 
         return AzureOpenAIImageAnalyzer().analyze_many(valid_paths, notes, image_ids=image_ids)
+    except ImportError:
+        return _mock_after_azure_failure(
+            primary_image_path,
+            notes,
+            image_ids,
+            deployment=getattr(settings, "azure_openai_deployment", ""),
+            diagnostic=AZURE_IMPORT_DIAGNOSTIC,
+        )
     except Exception:  # noqa: BLE001
-        return _mock_analyze(primary_image_path, notes, image_ids)
+        return _mock_after_azure_failure(
+            primary_image_path,
+            notes,
+            image_ids,
+            deployment=getattr(settings, "azure_openai_deployment", ""),
+            diagnostic=AZURE_PROVIDER_DIAGNOSTIC,
+        )

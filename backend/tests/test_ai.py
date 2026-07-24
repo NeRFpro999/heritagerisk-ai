@@ -10,6 +10,7 @@ These tests NEVER call the real Azure OpenAI API. They cover:
   - Risk case creation still works after AI analysis runs
 """
 
+import hashlib
 import json
 import sys
 import types
@@ -115,6 +116,12 @@ class TestMockAnalysis:
 
         assert result.provider == "mock"
         assert "mock analysis" in result.summary.lower()
+        assert len(result.preceding_attempts) == 1
+        assert result.preceding_attempts[0].status == "failed"
+        assert result.preceding_attempts[0].provider == "azure:unconfigured"
+        assert result.preceding_attempts[0].diagnostic.startswith(
+            "configuration_error:"
+        )
 
     def test_mock_summary_says_demo_or_triage_only(self):
         """Mock summary must state it is for demonstration/triage only."""
@@ -171,6 +178,11 @@ class TestProviderValidation:
         result = analyzer.analyze("", notes="crack")
         assert result.provider == "mock"
         assert "crack" in result.damage_tags
+        assert len(result.preceding_attempts) == 1
+        assert result.preceding_attempts[0].provider == "azure:unconfigured"
+        assert result.preceding_attempts[0].diagnostic.startswith(
+            "configuration_error:"
+        )
 
     def test_missing_image_returns_safe_result(self):
         """analyze() returns a safe result (not an exception) for a missing image."""
@@ -186,6 +198,8 @@ class TestProviderValidation:
         result = analyzer.analyze("/nonexistent/path/image.jpg", notes="crack")
         assert result.provider == "mock"
         assert "crack" in result.damage_tags
+        assert result.preceding_attempts[0].provider == "azure:gpt-5-mini"
+        assert result.preceding_attempts[0].diagnostic.startswith("image_error:")
 
     @pytest.mark.parametrize(
         ("endpoint", "api_key", "deployment"),
@@ -209,6 +223,13 @@ class TestProviderValidation:
         result = analyzer.analyze("", notes="water staining")
         assert result.provider == "mock"
         assert "water_staining" in result.damage_tags
+        expected_provider = (
+            f"azure:{deployment}" if deployment else "azure:unconfigured"
+        )
+        assert result.preceding_attempts[0].provider == expected_provider
+        assert result.preceding_attempts[0].diagnostic.startswith(
+            "configuration_error:"
+        )
 
     def test_endpoint_is_normalised_for_v1(self):
         from app.services.providers.azure_openai_provider import _normalise_endpoint
@@ -244,10 +265,19 @@ class TestProviderValidation:
 
         assert result.provider == "mock"
         assert "erosion" in result.damage_tags
+        assert result.preceding_attempts[0].provider == "azure:gpt-5-mini"
+        assert result.preceding_attempts[0].diagnostic.startswith(
+            "provider_error:"
+        )
 
     def test_successful_azure_response_returns_deployment_provider(self, tmp_path):
         """Mocked successful Azure JSON returns provider azure:gpt-5-mini."""
-        from app.services.providers.azure_openai_provider import AzureOpenAIImageAnalyzer
+        from app.services.providers.azure_openai_provider import (
+            PROMPT_SETTINGS,
+            AzureOpenAIImageAnalyzer,
+            analysis_rendered_request_sha256,
+            build_analysis_request_payload,
+        )
 
         image_path = tmp_path / "test.png"
         image_path.write_bytes(b"not-a-real-png-but-mime-is-guessed")
@@ -285,8 +315,31 @@ class TestProviderValidation:
         )
         fake_client.chat.completions.create.assert_called_once()
         call_kwargs = fake_client.chat.completions.create.call_args.kwargs
-        assert call_kwargs["model"] == "gpt-5-mini"
-        assert call_kwargs["max_completion_tokens"] == 600
+        expected_payload = build_analysis_request_payload(
+            [str(image_path)],
+            "crack",
+            [1],
+            "gpt-5-mini",
+        )
+        assert call_kwargs == expected_payload
+        assert PROMPT_SETTINGS == {"max_completion_tokens": 600}
+        assert "temperature" not in call_kwargs
+        assert "temperature" not in PROMPT_SETTINGS
+        expected_hash = hashlib.sha256(
+            json.dumps(
+                call_kwargs,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        assert result.rendered_request_sha256 == expected_hash
+        assert expected_hash == analysis_rendered_request_sha256(
+            [str(image_path)],
+            "crack",
+            [1],
+            "gpt-5-mini",
+        )
 
     def test_multiple_images_are_sent_in_one_analysis_request(self, tmp_path):
         from app.services.providers.azure_openai_provider import AzureOpenAIImageAnalyzer
@@ -429,6 +482,7 @@ class TestResponseValidation:
         assert result.provider == "azure:gpt-5-mini"
         assert result.validation_error == "Azure response was not valid JSON."
         assert result.damage_tags == []
+        assert result.preceding_attempts == []
 
 
 # ---------------------------------------------------------------------------

@@ -80,6 +80,31 @@ def _reviewer_identity(value) -> str | None:
     return identity or None
 
 
+def analysis_attempt_history(observation) -> list[dict]:
+    """Return persisted analysis records in append order for display/snapshotting."""
+    records = list(getattr(observation, "analysis_records", None) or [])
+    indexed_records = list(enumerate(records))
+    indexed_records.sort(
+        key=lambda item: (
+            getattr(item[1], "id", None) is None,
+            getattr(item[1], "id", None) or item[0],
+        )
+    )
+    history = []
+    for _, record in indexed_records:
+        created_at = getattr(record, "created_at", None)
+        history.append(
+            {
+                "record_id": getattr(record, "id", None),
+                "status": getattr(record, "status", None),
+                "provider": getattr(record, "provider", None),
+                "diagnostic": getattr(record, "diagnostic", None),
+                "created_at": utc_iso(created_at) if created_at else None,
+            }
+        )
+    return history
+
+
 def build_case_snapshot(
     observation,
     final_tags: list[str],
@@ -142,6 +167,8 @@ def build_case_snapshot(
             "observation_id": observation.id,
             "observation_created_at": utc_iso(observation.created_at),
             "image_urls": _image_urls(observation),
+            "analysis_attempts_available": True,
+            "analysis_attempts": analysis_attempt_history(observation),
             "site": {
                 "id": getattr(site, "id", None),
                 "name": getattr(site, "name", None),
@@ -190,6 +217,8 @@ def case_snapshot(case) -> dict:
         "observation_id": getattr(case, "observation_id", None),
         "observation_created_at": None,
         "image_urls": [],
+        "analysis_attempts_available": False,
+        "analysis_attempts": [],
         "site": {},
         "contributor_original": None,
         "current_reviewed": {},
@@ -229,6 +258,42 @@ def case_snapshot(case) -> dict:
         for tag in normalized.get("final_tags", [])
         if isinstance(tag, str)
     ] if isinstance(normalized.get("final_tags"), list) else []
+
+    attempts = []
+    stored_attempts = normalized.get("analysis_attempts")
+    if isinstance(stored_attempts, list):
+        for item in stored_attempts:
+            if not isinstance(item, dict):
+                continue
+            status = item.get("status")
+            provider = item.get("provider")
+            if not isinstance(status, str) or not isinstance(provider, str):
+                continue
+            diagnostic = item.get("diagnostic")
+            created_at = item.get("created_at")
+            record_id = item.get("record_id")
+            attempts.append(
+                {
+                    "record_id": (
+                        record_id
+                        if isinstance(record_id, int)
+                        and not isinstance(record_id, bool)
+                        else None
+                    ),
+                    "status": status,
+                    "provider": provider,
+                    "diagnostic": (
+                        diagnostic if isinstance(diagnostic, str) else None
+                    ),
+                    "created_at": (
+                        created_at if isinstance(created_at, str) else None
+                    ),
+                }
+            )
+    normalized["analysis_attempts"] = attempts
+    normalized["analysis_attempts_available"] = (
+        normalized.get("analysis_attempts_available") is True
+    )
 
     tag_weights = []
     stored_weights = normalized.get("tag_weights")

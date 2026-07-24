@@ -52,8 +52,11 @@ def _first_approved_observation(manifest: dict[str, Any]) -> tuple[dict[str, Any
 
 
 def _result_payload(db, observation_id: int, latency_seconds: float) -> dict[str, Any]:
+    from app.ai_schema import validate_analysis_result
     from app.config import settings
     from app.models import Observation
+    from app.provenance import analysis_attempt_history
+    from app.provider_identity import PROVIDER_AZURE, provider_identity
 
     observation = db.query(Observation).filter_by(id=observation_id).one()
     raw = {}
@@ -63,15 +66,21 @@ def _result_payload(db, observation_id: int, latency_seconds: float) -> dict[str
         except json.JSONDecodeError:
             raw = {"unparseable_raw_response": observation.ai_raw_response}
 
+    schema_validation_passed = False
+    try:
+        validate_analysis_result(
+            raw,
+            allowed_image_ids={image.id for image in observation.images},
+        )
+        schema_validation_passed = True
+    except Exception:  # noqa: BLE001
+        pass
+
+    attempts = analysis_attempt_history(observation)
     validation_passed = (
         observation.ai_analysis_status == "complete"
-        and isinstance(observation.ai_provider, str)
-        and observation.ai_provider.startswith("azure:")
-        and isinstance(raw.get("damage_tags"), list)
-        and isinstance(raw.get("severity"), int)
-        and isinstance(raw.get("confidence"), int)
-        and isinstance(raw.get("summary"), str)
-        and isinstance(raw.get("recommended_action"), str)
+        and provider_identity(observation.ai_provider) == PROVIDER_AZURE
+        and schema_validation_passed
     )
     return {
         "validation_passed": validation_passed,
@@ -80,14 +89,8 @@ def _result_payload(db, observation_id: int, latency_seconds: float) -> dict[str
         "observation_id": observation.id,
         "analysis_status": observation.ai_analysis_status,
         "provider": observation.ai_provider,
-        "structured_result": {
-            "damage_tags": raw.get("damage_tags"),
-            "severity": raw.get("severity"),
-            "confidence": raw.get("confidence"),
-            "summary": raw.get("summary"),
-            "uncertainty": raw.get("uncertainty"),
-            "recommended_action": raw.get("recommended_action"),
-        },
+        "structured_result": raw,
+        "analysis_attempts": attempts,
         "preserved_failure_state": None
         if validation_passed
         else {
@@ -96,6 +99,7 @@ def _result_payload(db, observation_id: int, latency_seconds: float) -> dict[str
             "ai_summary": observation.ai_summary,
             "ai_confidence": observation.ai_confidence,
             "ai_raw_response": observation.ai_raw_response,
+            "analysis_attempts": attempts,
         },
     }
 
@@ -167,4 +171,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise 
