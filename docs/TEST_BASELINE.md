@@ -9,7 +9,7 @@
 The current offline suite result is:
 
 ```text
-220 passed, 538 warnings in 203.33s (0:03:23)
+220 passed, 538 warnings in 121.92s (0:02:01)
 ```
 
 Command:

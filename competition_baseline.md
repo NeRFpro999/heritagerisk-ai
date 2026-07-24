@@ -15,7 +15,7 @@ Final verification command:
 cd backend && AZURE_OPENAI_ENABLED=false pytest -q
 ```
 
-Final verification result: **220 passed, 538 warnings in 203.33s (0:03:23)**.
+Final verification result: **220 passed, 538 warnings in 121.92s (0:02:01)**.
 
 ## Current Implemented Product Workflow
 
