@@ -246,3 +246,6 @@ data/azure_verify_uploads/
 reports/case_*.md
 reports/azure_verify/
 docs/.pytest_baseline_run.txt
+
+.claude/settings.local.json
+
