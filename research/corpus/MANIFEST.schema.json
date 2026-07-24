@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heritagerisk.local/research/corpus/MANIFEST.schema.json",
+  "title": "HeritageRisk research corpus manifest",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "source_root", "photos", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_root": {
+      "type": "string",
+      "description": "Audited photo directory. May be absolute in local audit outputs."
+    },
+    "photos": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/photo"
+      }
+    },
+    "duplicates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/duplicate_group"
+      },
+      "default": []
+    },
+    "missing_files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/photo"
+      },
+      "default": []
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "total_photos",
+        "counts_by_role",
+        "counts_by_asset_group",
+        "complete_asset_groups",
+        "candidate_groups_needing_validation",
+        "excluded_privacy_or_sensitive_items"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "total_photos": { "type": "integer", "minimum": 0 },
+        "counts_by_role": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "counts_by_asset_group": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "complete_asset_groups": { "type": "integer", "minimum": 0 },
+        "candidate_groups_needing_validation": { "type": "integer", "minimum": 0 },
+        "excluded_privacy_or_sensitive_items": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "photo": {
+      "type": "object",
+      "required": [
+        "photo_id",
+        "sha256",
+        "relative_path",
+        "width",
+        "height",
+        "capture_role",
+        "asset_group_id",
+        "site_label",
+        "privacy_status",
+        "cultural_sensitivity_status",
+        "provenance_note"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "photo_id": {
+          "type": "string",
+          "description": "Stable anonymous id for this manifest row."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "relative_path": {
+          "type": "string",
+          "description": "Path relative to the audited photo directory."
+        },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "capture_role": {
+          "type": "string",
+          "enum": ["WIDE", "MEDIUM", "CLOSE"]
+        },
+        "asset_group_id": {
+          "type": "string",
+          "description": "Anonymous id grouping WIDE/MEDIUM/CLOSE views of one asset."
+        },
+        "site_label": {
+          "type": "string",
+          "description": "Redacted site label, not a precise address."
+        },
+        "privacy_status": {
+          "type": "string",
+          "enum": ["cleared", "needs_review", "excluded"]
+        },
+        "cultural_sensitivity_status": {
+          "type": "string",
+          "enum": ["cleared", "needs_review", "sensitive", "excluded"]
+        },
+        "provenance_note": {
+          "type": "string",
+          "description": "Short source/consent/audit note without private details."
+        }
+      }
+    },
+    "duplicate_group": {
+      "type": "object",
+      "required": ["sha256", "photo_ids", "relative_paths"],
+      "additionalProperties": false,
+      "properties": {
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "photo_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 2
+        },
+        "relative_paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 2
+        }
+      }
+    }
+  }
+}
