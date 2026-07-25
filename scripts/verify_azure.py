@@ -10,6 +10,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from dotenv import load_dotenv
 from fastapi.testclient import TestClient
 
 from seed_demo import (
@@ -32,7 +33,8 @@ DEFAULT_VERIFY_REPORTS = REPO_ROOT / "reports" / "azure_verify"
 REQUIRED_AZURE_ENV = (
     "AZURE_OPENAI_ENDPOINT",
     "AZURE_OPENAI_API_KEY",
-    "AZURE_OPENAI_PRIMARY_DEPLOYMENT",
+    "AZURE_OPENAI_DEPLOYMENT",
+    "AZURE_OPENAI_API_VERSION",
 )
 
 
@@ -84,11 +86,16 @@ def _result_payload(db, observation_id: int, latency_seconds: float) -> dict[str
     )
     return {
         "validation_passed": validation_passed,
+        "schema_validation_passed": schema_validation_passed,
         "latency_seconds": round(latency_seconds, 3),
         "deployment": settings.azure_openai_deployment,
         "observation_id": observation.id,
         "analysis_status": observation.ai_analysis_status,
         "provider": observation.ai_provider,
+        "validated_indicator_count": len(raw.get("indicators", []))
+        if isinstance(raw.get("indicators"), list)
+        else 0,
+        "evidence_sufficiency": raw.get("evidence_sufficiency", "not available"),
         "structured_result": raw,
         "analysis_attempts": attempts,
         "preserved_failure_state": None
@@ -102,6 +109,34 @@ def _result_payload(db, observation_id: int, latency_seconds: float) -> dict[str
             "analysis_attempts": attempts,
         },
     }
+
+
+def _format_summary(result: dict[str, Any]) -> str:
+    lines = [
+        "HeritageRisk Azure verification",
+        f"Deployment: {result['deployment']}",
+        f"Provider: {result['provider']}",
+        f"Analysis status: {result['analysis_status']}",
+        f"Latency: {result['latency_seconds']:.3f} seconds",
+        f"Validated indicators: {result['validated_indicator_count']}",
+        f"Evidence sufficiency: {result['evidence_sufficiency']}",
+        "Schema validation passed: "
+        + ("yes" if result["schema_validation_passed"] else "no"),
+        "Azure workflow verification passed: "
+        + ("yes" if result["validation_passed"] else "no"),
+    ]
+    if not result["validation_passed"]:
+        lines.extend(
+            [
+                "Preserved failure state:",
+                json.dumps(
+                    result["preserved_failure_state"],
+                    indent=2,
+                    sort_keys=True,
+                ),
+            ]
+        )
+    return "\n".join(lines)
 
 
 def run_verify(
@@ -155,6 +190,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    load_dotenv(REPO_ROOT / ".env", override=False)
     try:
         result = run_verify(
             asset_dir=args.assets.resolve(),
@@ -166,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Azure verification refused: {exc}", file=sys.stderr)
         return 1
 
-    print(json.dumps(result, indent=2, sort_keys=True))
+    print(_format_summary(result))
     return 0 if result["validation_passed"] else 1
 
 

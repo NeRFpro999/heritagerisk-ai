@@ -24,7 +24,8 @@ from app.provider_identity import PROVIDER_MOCK, provider_identity
 REQUIRED_AZURE_ENV = (
     "AZURE_OPENAI_ENDPOINT",
     "AZURE_OPENAI_API_KEY",
-    "AZURE_OPENAI_PRIMARY_DEPLOYMENT",
+    "AZURE_OPENAI_DEPLOYMENT",
+    "AZURE_OPENAI_API_VERSION",
 )
 CONDITIONS = ("single_medium", "three_view")
 ASSET_SETS = ("pilot", "held_out", "all")

@@ -270,6 +270,123 @@ class TestProviderValidation:
             "provider_error:"
         )
 
+    def test_bad_endpoint_connection_uses_labelled_transport_fallback(
+        self,
+        tmp_path,
+    ):
+        import httpx
+        from openai import APIConnectionError
+        from app.services.providers.azure_openai_provider import (
+            AzureOpenAIImageAnalyzer,
+        )
+
+        image_path = tmp_path / "test.png"
+        image_path.write_bytes(b"mock-image")
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.side_effect = APIConnectionError(
+            message="fake DNS failure",
+            request=httpx.Request(
+                "POST",
+                "https://bad-endpoint.openai.azure.com/openai/v1/",
+            ),
+        )
+
+        with patch("app.services.providers.azure_openai_provider.settings") as s:
+            s.azure_openai_endpoint = "https://bad-endpoint.openai.azure.com/"
+            s.azure_openai_api_key = "fake-key"
+            s.azure_openai_deployment = "heritage-gpt5-mini"
+            s.azure_openai_api_version = "v1"
+            s.azure_openai_timeout_seconds = 30
+            analyzer = AzureOpenAIImageAnalyzer()
+
+        with patch("openai.OpenAI", return_value=fake_client):
+            result = analyzer.analyze(str(image_path), notes="crack")
+
+        assert result.provider == "mock"
+        assert result.preceding_attempts[0].provider == (
+            "azure:heritage-gpt5-mini"
+        )
+        assert result.preceding_attempts[0].diagnostic == (
+            "transport_error: the Azure OpenAI request could not be completed."
+        )
+
+    def test_auth_rejection_uses_labelled_api_fallback(self, tmp_path):
+        import httpx
+        from openai import APIStatusError
+        from app.services.providers.azure_openai_provider import (
+            AzureOpenAIImageAnalyzer,
+        )
+
+        image_path = tmp_path / "test.png"
+        image_path.write_bytes(b"mock-image")
+        request = httpx.Request(
+            "POST",
+            "https://fake.openai.azure.com/openai/v1/chat/completions",
+        )
+        response = httpx.Response(401, request=request)
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.side_effect = APIStatusError(
+            "fake credential rejection",
+            response=response,
+            body={"error": {"message": "fake credential rejection"}},
+        )
+
+        with patch("app.services.providers.azure_openai_provider.settings") as s:
+            s.azure_openai_endpoint = "https://fake.openai.azure.com/"
+            s.azure_openai_api_key = "fake-key"
+            s.azure_openai_deployment = "heritage-gpt5-mini"
+            s.azure_openai_api_version = "v1"
+            s.azure_openai_timeout_seconds = 30
+            analyzer = AzureOpenAIImageAnalyzer()
+
+        with patch("openai.OpenAI", return_value=fake_client):
+            result = analyzer.analyze(str(image_path), notes="erosion")
+
+        assert result.provider == "mock"
+        assert result.preceding_attempts[0].provider == (
+            "azure:heritage-gpt5-mini"
+        )
+        assert result.preceding_attempts[0].diagnostic == (
+            "api_error: Azure OpenAI rejected or failed the request."
+        )
+        assert "credential" not in result.preceding_attempts[0].diagnostic
+
+    def test_timeout_uses_labelled_transport_fallback(self, tmp_path):
+        import httpx
+        from openai import APITimeoutError
+        from app.services.providers.azure_openai_provider import (
+            AzureOpenAIImageAnalyzer,
+        )
+
+        image_path = tmp_path / "test.png"
+        image_path.write_bytes(b"mock-image")
+        fake_client = MagicMock()
+        fake_client.chat.completions.create.side_effect = APITimeoutError(
+            request=httpx.Request(
+                "POST",
+                "https://fake.openai.azure.com/openai/v1/chat/completions",
+            )
+        )
+
+        with patch("app.services.providers.azure_openai_provider.settings") as s:
+            s.azure_openai_endpoint = "https://fake.openai.azure.com/"
+            s.azure_openai_api_key = "fake-key"
+            s.azure_openai_deployment = "heritage-gpt5-mini"
+            s.azure_openai_api_version = "v1"
+            s.azure_openai_timeout_seconds = 0.01
+            analyzer = AzureOpenAIImageAnalyzer()
+
+        with patch("openai.OpenAI", return_value=fake_client):
+            result = analyzer.analyze(str(image_path), notes="water staining")
+
+        assert result.provider == "mock"
+        assert result.preceding_attempts[0].provider == (
+            "azure:heritage-gpt5-mini"
+        )
+        assert result.preceding_attempts[0].diagnostic == (
+            "transport_error: the Azure OpenAI request could not be completed."
+        )
+
     def test_successful_azure_response_returns_deployment_provider(self, tmp_path):
         """Mocked successful Azure JSON returns provider azure:gpt-5-mini."""
         from app.services.providers.azure_openai_provider import (
@@ -322,7 +439,11 @@ class TestProviderValidation:
             "gpt-5-mini",
         )
         assert call_kwargs == expected_payload
-        assert PROMPT_SETTINGS == {"max_completion_tokens": 600}
+        assert PROMPT_SETTINGS == {
+            "max_completion_tokens": 600,
+            "response_format": {"type": "json_object"},
+        }
+        assert call_kwargs["response_format"] == {"type": "json_object"}
         assert "temperature" not in call_kwargs
         assert "temperature" not in PROMPT_SETTINGS
         expected_hash = hashlib.sha256(

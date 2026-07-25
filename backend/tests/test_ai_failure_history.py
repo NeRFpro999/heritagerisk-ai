@@ -114,7 +114,28 @@ def _azure_settings(ai_settings, provider_settings) -> None:
     provider_settings.azure_openai_endpoint = "https://fake.openai.azure.com/"
     provider_settings.azure_openai_api_key = "fake-key"
     provider_settings.azure_openai_deployment = "mydeploy"
+    provider_settings.azure_openai_api_version = "v1"
     provider_settings.azure_openai_timeout_seconds = 30
+
+
+def _valid_azure_payload(image_id: int, indicator_type: str = "crack") -> dict:
+    return {
+        "schema_version": "2",
+        "provider": "azure:mydeploy",
+        "overall_summary": "A narrow linear opening is visible in the masonry.",
+        "evidence_sufficiency": "partial",
+        "indicators": [
+            {
+                "indicator_type": indicator_type,
+                "evidence_location": "centre of image",
+                "image_refs": [image_id],
+                "confidence": 0.78,
+                "supporting_evidence": "A narrow linear opening is visible.",
+                "severity_contribution": 3,
+            }
+        ],
+        "insufficient_reason": None,
+    }
 
 
 def test_connection_failure_persists_failed_then_mock_and_renders(
@@ -290,3 +311,118 @@ def test_malformed_json_remains_one_failed_record_without_mock(
     stored = json.loads(observation.ai_raw_response)
     assert stored["validation_status"] == "failed"
     assert stored["raw_payload"]["validation_status"] == "failed"
+
+
+def test_mocked_gpt5_mini_success_persists_schema_v2_azure_result(
+    failure_history_context,
+):
+    from app.models import AIAnalysisRecord, Observation
+
+    client = failure_history_context["client"]
+    db = failure_history_context["db"]
+    payload = _valid_azure_payload(failure_history_context["image_id"])
+    fake_response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=json.dumps(payload))
+            )
+        ]
+    )
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = fake_response
+
+    with (
+        patch("app.services.ai_analysis.settings") as ai_settings,
+        patch(
+            "app.services.providers.azure_openai_provider.settings"
+        ) as provider_settings,
+        patch("openai.OpenAI", return_value=fake_client),
+    ):
+        _azure_settings(ai_settings, provider_settings)
+        response = post_form(
+            client,
+            f"/observations/{failure_history_context['observation_id']}/analyze",
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    db.expire_all()
+    observation = db.get(
+        Observation,
+        failure_history_context["observation_id"],
+    )
+    records = (
+        db.query(AIAnalysisRecord)
+        .filter_by(observation_id=observation.id)
+        .order_by(AIAnalysisRecord.id)
+        .all()
+    )
+    assert [(record.status, record.provider) for record in records] == [
+        ("complete", "azure:mydeploy")
+    ]
+    assert observation.ai_analysis_status == "complete"
+    assert observation.ai_provider == "azure:mydeploy"
+    stored = json.loads(observation.ai_raw_response)
+    assert stored["schema_version"] == "2"
+    assert stored["provider"] == "azure:mydeploy"
+    request = fake_client.chat.completions.create.call_args.kwargs
+    assert request["max_completion_tokens"] == 600
+    assert request["response_format"] == {"type": "json_object"}
+    assert "temperature" not in request
+
+
+def test_schema_invalid_payload_persists_one_failed_record_without_mock(
+    failure_history_context,
+):
+    from app.models import AIAnalysisRecord, Observation
+
+    client = failure_history_context["client"]
+    db = failure_history_context["db"]
+    payload = _valid_azure_payload(
+        failure_history_context["image_id"],
+        indicator_type="unsupported_damage",
+    )
+    fake_response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=json.dumps(payload))
+            )
+        ]
+    )
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = fake_response
+
+    with (
+        patch("app.services.ai_analysis.settings") as ai_settings,
+        patch(
+            "app.services.providers.azure_openai_provider.settings"
+        ) as provider_settings,
+        patch("openai.OpenAI", return_value=fake_client),
+    ):
+        _azure_settings(ai_settings, provider_settings)
+        response = post_form(
+            client,
+            f"/observations/{failure_history_context['observation_id']}/analyze",
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    db.expire_all()
+    observation = db.get(
+        Observation,
+        failure_history_context["observation_id"],
+    )
+    records = (
+        db.query(AIAnalysisRecord)
+        .filter_by(observation_id=observation.id)
+        .order_by(AIAnalysisRecord.id)
+        .all()
+    )
+    assert [(record.status, record.provider) for record in records] == [
+        ("failed", "azure:mydeploy")
+    ]
+    assert observation.ai_analysis_status == "failed"
+    assert observation.ai_provider == "azure:mydeploy"
+    stored = json.loads(observation.ai_raw_response)
+    assert stored["validation_status"] == "failed"
+    assert "Unknown indicator_type" in stored["validation_error"]

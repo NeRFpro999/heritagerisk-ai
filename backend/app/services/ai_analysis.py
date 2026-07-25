@@ -2,7 +2,7 @@
 AI image analysis — single entry point for the app.
 
   AZURE_OPENAI_ENABLED=false (default)  → mock result, no API call
-  AZURE_OPENAI_ENABLED=true, no creds  → failed attempt + mock fallback
+  AZURE_OPENAI_ENABLED=true, no creds  → startup warning + mock result
   AZURE_OPENAI_ENABLED=true, creds set → Azure OpenAI Vision
 """
 

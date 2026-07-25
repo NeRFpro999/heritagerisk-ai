@@ -97,6 +97,7 @@ structural safety, legal status, urgency, or whether a place is safe to enter.
 
 PROMPT_SETTINGS = {
     "max_completion_tokens": 600,
+    "response_format": {"type": "json_object"},
 }
 
 
@@ -323,6 +324,7 @@ class AzureOpenAIImageAnalyzer:
         self.endpoint = settings.azure_openai_endpoint
         self.api_key = settings.azure_openai_api_key
         self.deployment = settings.azure_openai_deployment
+        self.api_version = settings.azure_openai_api_version
         self.timeout_seconds = settings.azure_openai_timeout_seconds
 
     def _validate_response(
@@ -354,7 +356,12 @@ class AzureOpenAIImageAnalyzer:
         Send one or more images + notes to Azure OpenAI Vision.
         Returns a validated AIAnalysisResult; never raises.
         """
-        if not self.endpoint or not self.api_key or not self.deployment:
+        if (
+            not self.endpoint
+            or not self.api_key
+            or not self.deployment
+            or not self.api_version
+        ):
             primary_image_path = image_paths[0] if image_paths else ""
             return _mock_fallback_result(
                 primary_image_path,
@@ -404,6 +411,8 @@ class AzureOpenAIImageAnalyzer:
             )
 
         try:
+            # Azure's v1 endpoint does not accept an api-version query parameter.
+            # The explicit setting is validated as "v1" during configuration.
             client = OpenAI(
                 api_key=self.api_key,
                 base_url=_normalise_endpoint(self.endpoint),

@@ -158,7 +158,10 @@ def test_run_experiment_mock_creates_paired_sessions_and_exports(tmp_path):
         assert result["status"] == "mock"
         assert result["structured_response"]["schema_version"] == "2"
         assert settings["asset_set"] == "pilot"
-        assert settings["request_settings"] == {"max_completion_tokens": 600}
+        assert settings["request_settings"] == {
+            "max_completion_tokens": 600,
+            "response_format": {"type": "json_object"},
+        }
         assert "temperature" not in settings["request_settings"]
         assert "schema_version" not in settings["request_settings"]
         assert session["run_index"] == 0

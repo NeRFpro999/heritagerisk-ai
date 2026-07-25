@@ -61,13 +61,15 @@ Open `.env` and set:
 
 ```
 AZURE_OPENAI_ENABLED=true
-AZURE_OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com/openai/v1/
-AZURE_OPENAI_API_KEY=your-real-api-key
-AZURE_OPENAI_PRIMARY_DEPLOYMENT=your-vision-deployment-name
+AZURE_OPENAI_ENDPOINT=https://YOUR_RESOURCE_NAME.openai.azure.com/
+AZURE_OPENAI_API_KEY=YOUR_AZURE_OPENAI_API_KEY
+AZURE_OPENAI_DEPLOYMENT=YOUR_GPT5_MINI_DEPLOYMENT_NAME
+AZURE_OPENAI_API_VERSION=v1
 AZURE_OPENAI_TIMEOUT_SECONDS=30
 ```
 
-**Important:** `AZURE_OPENAI_PRIMARY_DEPLOYMENT` must support image input.
+**Important:** `AZURE_OPENAI_DEPLOYMENT` is the Azure deployment name, which
+may differ from the underlying model name, and it must support image input.
 Configuration, connection, or response failures fall back to a clearly labelled
 mock result; the route does not fabricate an Azure success.
 

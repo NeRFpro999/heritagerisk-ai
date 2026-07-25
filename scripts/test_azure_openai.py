@@ -92,9 +92,19 @@ def main() -> int:
         _required_env("AZURE_OPENAI_ENDPOINT", "Missing AZURE_OPENAI_ENDPOINT.")
     )
     deployment = _required_env(
-        "AZURE_OPENAI_PRIMARY_DEPLOYMENT",
-        "Missing AZURE_OPENAI_PRIMARY_DEPLOYMENT.",
+        "AZURE_OPENAI_DEPLOYMENT",
+        "Missing AZURE_OPENAI_DEPLOYMENT.",
     )
+    api_version = _required_env(
+        "AZURE_OPENAI_API_VERSION",
+        "Missing AZURE_OPENAI_API_VERSION.",
+    )
+    if api_version.lower() != "v1":
+        print(
+            "AZURE_OPENAI_API_VERSION must be v1 for the configured endpoint.",
+            file=sys.stderr,
+        )
+        return 1
 
     client = OpenAI(
         api_key=api_key,

@@ -87,20 +87,23 @@ REVIEWER_USERNAME=demo.reviewer REVIEWER_PASSWORD='...' \
 python3 scripts/seed_demo.py --mock
 ```
 
-Use `--azure` only when `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, and
-`AZURE_OPENAI_PRIMARY_DEPLOYMENT` are present in the environment. To verify one
-live Azure observation without writing fabricated success data:
+Use `--azure` only when `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`,
+`AZURE_OPENAI_DEPLOYMENT`, and `AZURE_OPENAI_API_VERSION` are present in the
+environment. The deployment value is the Azure deployment name, which may
+differ from the model name. To verify one live Azure observation without
+writing fabricated success data:
 
 ```bash
 AZURE_OPENAI_ENABLED=true REVIEWER_USERNAME=demo.reviewer REVIEWER_PASSWORD='...' \
 python3 scripts/verify_azure.py --assets demo_assets
 ```
 
-`verify_azure.py` prints the persisted structured result, latency, deployment,
-and validation status. It exits nonzero if Azure falls back to mock or fails
-schema validation. A validation failure preserves the sanitized raw payload; a
-transport/configuration fallback preserves only the clearly labelled mock state,
-not the failed Azure attempt or diagnostic.
+`verify_azure.py` prints a concise summary of the persisted structured result,
+latency, deployment, indicator count, evidence sufficiency, and schema
+validation status. It exits nonzero if Azure falls back to mock or fails schema
+validation. Validation failures preserve a sanitized raw payload; operational
+fallbacks preserve a failed Azure attempt followed by the clearly labelled mock
+result.
 
 ## Reviewer Access and Local Demo Scope
 

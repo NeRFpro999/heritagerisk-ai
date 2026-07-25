@@ -6,8 +6,10 @@ remain available without Azure settings; reviewer actions fail closed until the
 single reviewer credential is configured.
 """
 
+import logging
 import os
 from pathlib import Path
+from typing import Mapping
 
 # Load .env automatically when running locally.
 # python-dotenv is a dev dependency; it's a no-op if the file doesn't exist.
@@ -20,40 +22,88 @@ except ImportError:
     pass  # python-dotenv not installed — fine, rely on environment variables
 
 
-def _float_env(name: str, default: float) -> float:
+logger = logging.getLogger(__name__)
+
+
+def _float_env(environ: Mapping[str, str], name: str, default: float) -> float:
     try:
-        return float(os.environ.get(name, str(default)))
+        return float(environ.get(name, str(default)))
     except ValueError:
         return default
 
 
 class Settings:
-    # ── Azure OpenAI (all optional — app works without them) ──────────────────
-    azure_openai_endpoint: str = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
-    azure_openai_api_key: str = os.environ.get("AZURE_OPENAI_API_KEY", "")
-    azure_openai_deployment: str = os.environ.get("AZURE_OPENAI_PRIMARY_DEPLOYMENT", "")
-    azure_openai_timeout_seconds: float = _float_env("AZURE_OPENAI_TIMEOUT_SECONDS", 30)
+    """Environment-backed settings with fail-safe Azure activation."""
 
-    # Reviewer authentication fails closed when either credential is absent.
-    reviewer_username: str = os.environ.get("REVIEWER_USERNAME", "")
-    reviewer_password_hash: str = os.environ.get("REVIEWER_PASSWORD_HASH", "")
-    session_secret_key: str = os.environ.get("SESSION_SECRET_KEY", "")
+    REQUIRED_AZURE_VARIABLES = (
+        "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_DEPLOYMENT",
+        "AZURE_OPENAI_API_VERSION",
+    )
 
-    # ── Feature flag ──────────────────────────────────────────────────────────
-    # Set AZURE_OPENAI_ENABLED=true in your .env to activate real AI calls.
-    # When false (the default), the app uses a rule-based mock instead.
-    azure_openai_enabled: bool = os.environ.get("AZURE_OPENAI_ENABLED", "false").lower() == "true"
-    ai_analysis_enabled: bool = azure_openai_enabled
+    def __init__(self, environ: Mapping[str, str] | None = None) -> None:
+        values = os.environ if environ is None else environ
 
-    @property
-    def azure_credentials_present(self) -> bool:
-        """True only when all three required Azure fields are non-empty."""
-        return bool(
-            self.azure_openai_endpoint
-            and self.azure_openai_api_key
-            and self.azure_openai_deployment
+        self.azure_openai_endpoint = values.get(
+            "AZURE_OPENAI_ENDPOINT",
+            "",
+        ).strip()
+        self.azure_openai_api_key = values.get(
+            "AZURE_OPENAI_API_KEY",
+            "",
+        ).strip()
+        self.azure_openai_deployment = values.get(
+            "AZURE_OPENAI_DEPLOYMENT",
+            "",
+        ).strip()
+        self.azure_openai_api_version = values.get(
+            "AZURE_OPENAI_API_VERSION",
+            "",
+        ).strip()
+        self.azure_openai_timeout_seconds = _float_env(
+            values,
+            "AZURE_OPENAI_TIMEOUT_SECONDS",
+            30,
         )
 
+        self.reviewer_username = values.get("REVIEWER_USERNAME", "")
+        self.reviewer_password_hash = values.get("REVIEWER_PASSWORD_HASH", "")
+        self.session_secret_key = values.get("SESSION_SECRET_KEY", "")
 
-# Single shared instance — import this everywhere instead of re-reading env vars.
+        self.azure_openai_requested = (
+            values.get("AZURE_OPENAI_ENABLED", "false").lower() == "true"
+        )
+        self.azure_missing_variables = tuple(
+            name
+            for name in self.REQUIRED_AZURE_VARIABLES
+            if not values.get(name, "").strip()
+        )
+        self.azure_api_version_supported = (
+            self.azure_openai_api_version.lower() == "v1"
+        )
+        self.azure_credentials_present = bool(
+            not self.azure_missing_variables
+            and self.azure_api_version_supported
+        )
+        self.azure_openai_enabled = bool(
+            self.azure_openai_requested
+            and self.azure_credentials_present
+        )
+        self.ai_analysis_enabled = self.azure_openai_enabled
+
+        if self.azure_openai_requested and self.azure_missing_variables:
+            logger.warning(
+                "Azure OpenAI was requested but is disabled because required "
+                "environment variables are missing: %s. Mock analysis remains active.",
+                ", ".join(self.azure_missing_variables),
+            )
+        elif self.azure_openai_requested and not self.azure_api_version_supported:
+            logger.warning(
+                "Azure OpenAI was requested but is disabled because "
+                "AZURE_OPENAI_API_VERSION must be 'v1' for the configured v1 "
+                "endpoint. Mock analysis remains active."
+            )
+
+
 settings = Settings()
