@@ -77,10 +77,4 @@ def render_results_markdown(outputs: AnalysisOutputs) -> str:
             "",
             _markdown_table(outputs.kappa),
             "",
-            "## Repeatability",
-            "",
-            _markdown_table(outputs.repeatability),
-            "",
-        ]
-    )
-    return "\n".join(lines)
+          

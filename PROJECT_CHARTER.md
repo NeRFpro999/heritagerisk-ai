@@ -122,7 +122,4 @@ competition demonstration, not a production public reporting service.
 - Keep the app readable for a student project team.
 - Preserve the working MVP workflow at every step.
 - Use the existing stack: FastAPI, SQLAlchemy, SQLite, Jinja2, vanilla CSS.
-- Keep Azure optional and the mock fallback working.
-- Never hardcode secrets.
-- Add tests for new workflow logic.
-- Keep official claims aligned with implemented behavior.
+- Keep Azure optional and the mock fallback wo

@@ -264,4 +264,61 @@ Implemented and tested in the July 2026 build:
 - Removal of the legacy `/sites/{id}/observations/new` and
   `/sites/{id}/observations` upload routes and their template
 
-Communi
+Community workflow multi-image evidence still belongs directly to one
+`Observation`. Experiment sessions are separate research records and must not be
+presented as reviewed community observations or Risk Cases. YOLO detection, an
+aggregated site-level risk view, a completed labelled dataset, evidence fusion,
+completed live-Azure experiment results, and model-comparison conclusions remain
+unimplemented.
+
+Do not overstate the implemented workflow. The Observation working copy remains
+editable, AI attempt metadata is retained but prior proposals are not retained
+as complete revisions, and older database rows can have `NULL` provenance or
+reviewer identities. The single
+credential does not provide individual accounts, roles, recovery, throttling, or
+an append-only action history. Local HTTP does not set the session cookie's
+`Secure` flag, and upload URLs plus read-only case/report pages remain public.
+[competition_baseline.md](competition_baseline.md) records these and the other
+limitations, including unverified live Azure behavior.
+
+If a feature is planned but not built, it may appear in `PROJECT_CHARTER.md` and `TECHNICAL_SCOPE.md` as a future target. It must not appear in the app UI, evidence reports, or seed data as if it were working.
+
+## 12. Keep Code Readable for a Student Competition Project
+
+Style rules (these are also enforced by `feedback_refactor_decisions.md` in the project memory):
+
+- No ASCII banner comments (`# ── Section ──────────`). Use blank lines to separate sections.
+- No duplicate implementations of the same logic.
+- No class with a single method and two private helpers — extract as module-level functions instead.
+- Module docstrings: 1–4 lines. State purpose or routing logic only.
+- Comments explain *why*, not *what*. A good comment: "# Lazy import — keeps app working without openai installed". A bad comment: `# Create risk case` above three obvious lines.
+- No marketing words in UI text: seamless, cutting-edge, revolutionary, leveraging, robust, empowering, platform (as buzzword).
+- No multi-paragraph docstrings or 14-line docstring blocks.
+
+---
+
+## Tag Taxonomy
+
+The damage tag set is shared across three files and must stay consistent:
+
+`crack, erosion, graffiti, corrosion, water_staining, vegetation_growth, surface_loss, fire_damage, other`
+
+Files that define or reference this list:
+- `app/risk.py` — `TAG_WEIGHTS` (source of truth for scoring)
+- `app/services/ai_analysis.py` — `ALLOWED_TAGS`
+- `app/services/providers/azure_openai_provider.py` — `ALLOWED_TAGS`
+
+If a tag is added or removed, update all three locations and update the relevant tests.
+
+---
+
+## Quick Reference
+
+| Task | Command |
+|------|---------|
+| Run the app | `cd backend && python3 run.py` → http://127.0.0.1:8000 |
+| Reviewer login | http://127.0.0.1:8000/reviewer/login |
+| Seed demo data | Sign in and POST `/seed` from the UI, or `cd backend && python3 -m app.seed` for local CLI seeding |
+| Run tests | `cd backend && pytest` |
+| Reset database | Delete `data/heritagerisk.db`, then reseed |
+| Azure smoke test | `cd backend && python3 ../scripts/test_azure_openai.py` (needs `.env`) |
